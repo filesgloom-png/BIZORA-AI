@@ -26,7 +26,7 @@ const prompts = [
 
 declare global {
   interface Window {
-    Telegram?: { WebApp?: { ready: () => void; expand: () => void; initData?: string; initDataUnsafe?: { user?: { first_name?: string } }; colorScheme?: string } };
+    Telegram?: { WebApp?: { ready: () => void; expand: () => void; initData?: string; initDataUnsafe?: { user?: { id?: number; first_name?: string } }; colorScheme?: string } };
   }
 }
 
@@ -53,6 +53,21 @@ export default function App() {
     const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const firstName = window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || 'Предприниматель';
 
+  function contextStorageKey() {
+    const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
+    return 'bizora-ai-context-' + (userId ? String(userId) : 'anonymous');
+  }
+
+  function persistContext(projectId: number | null, selectedConversationId: number | null) {
+    try {
+      window.localStorage.setItem(contextStorageKey(), JSON.stringify({
+        projectId, conversationId: selectedConversationId,
+      }));
+    } catch {
+      // Storage can be unavailable in restricted WebViews; server history remains intact.
+    }
+  }
+
   async function loadConversation(conversation: Conversation | number) {
     const id = typeof conversation === 'number' ? conversation : conversation.id;
     const initData = window.Telegram?.WebApp?.initData || '';
@@ -63,15 +78,17 @@ export default function App() {
     if (!response.ok) throw new Error('Не удалось загрузить сообщения диалога');
     const history = await response.json();
     setConversationId(id);
+    persistContext(activeProjectId, id);
     setMessages((history.messages || []).map((item: { role: string; content: string }) => ({
       role: (item.role === 'user' ? 'user' : 'assistant') as Message['role'], text: item.content,
     })));
   }
 
-  async function selectProject(projectId: number | null) {
+  async function selectProject(projectId: number | null, preferredConversationId: number | null = null) {
     setActiveProjectId(projectId);
     setConversationId(null);
     setMessages([]);
+    persistContext(projectId, null);
     const initData = window.Telegram?.WebApp?.initData || '';
     if (!initData) return;
     const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -82,9 +99,20 @@ export default function App() {
       const data = await response.json();
       const items: Conversation[] = data.conversations || [];
       setConversations(items);
-      if (items.length) await loadConversation(items[0]);
+      const selected = items.find(item => item.id === preferredConversationId) || items[0];
+      if (selected) {
+        await loadConversation(selected);
+        persistContext(projectId, selected.id);
+      } else {
+        persistContext(projectId, null);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Ошибка загрузки контекста');
+      if (projectId !== null) {
+        setActiveProjectId(null); setConversationId(null); setConversations([]); setMessages([]);
+        persistContext(null, null);
+        void selectProject(null);
+      }
     }
   }
 
@@ -102,7 +130,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.detail || 'Не удалось создать диалог');
       const created: Conversation = data.conversation;
       setConversations(prev => [created, ...prev.filter(item => item.id !== created.id)]);
-      setConversationId(created.id); setMessages([]); setTab('studio'); setNotice('Новый диалог создан');
+      setConversationId(created.id); persistContext(activeProjectId, created.id); setMessages([]); setTab('studio'); setNotice('Новый диалог создан');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Ошибка создания диалога');
     } finally { setConversationBusy(false); }
@@ -213,14 +241,16 @@ export default function App() {
     const initData = window.Telegram?.WebApp?.initData || '';
     if (initData) {
       void loadProjects().catch(() => undefined);
-      fetch(base + '/api/conversations?limit=1&unassigned=true', {
-        headers: { 'X-Telegram-Init-Data': initData },
-      }).then(r => r.ok ? r.json() : Promise.reject(new Error('History unavailable')))
-        .then(async data => {
-          const items: Conversation[] = data.conversations || [];
-          setConversations(items);
-          if (items.length) await loadConversation(items[0]);
-        }).catch(() => undefined);
+      let savedContext: { projectId?: number | null; conversationId?: number | null } = {};
+      try {
+        const raw = window.localStorage.getItem(contextStorageKey());
+        if (raw) savedContext = JSON.parse(raw);
+      } catch {
+        savedContext = {};
+      }
+      const savedProjectId = typeof savedContext.projectId === 'number' && savedContext.projectId > 0 ? savedContext.projectId : null;
+      const savedConversationId = typeof savedContext.conversationId === 'number' && savedContext.conversationId > 0 ? savedContext.conversationId : null;
+      void selectProject(savedProjectId, savedConversationId);
     }
   }, []);
 
@@ -253,6 +283,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
       if (typeof data.conversation_id === 'number') {
         setConversationId(data.conversation_id);
+        persistContext(activeProjectId, data.conversation_id);
         setConversations(prev => {
           const existing = prev.find(item => item.id === data.conversation_id);
           const now = new Date().toISOString();
