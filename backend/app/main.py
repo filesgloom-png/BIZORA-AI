@@ -154,7 +154,7 @@ def owner_dashboard(user: dict = Depends(require_owner)):
 
 
 @app.post("/api/chat/demo")
-def demo_chat(request: DemoChatRequest):
+def demo_chat(request: DemoChatRequest, user: dict = Depends(get_current_telegram_user)):
     if not request.message.strip():
         raise HTTPException(status_code=422, detail="Message cannot be empty")
     if settings.ai_provider_api_key:
