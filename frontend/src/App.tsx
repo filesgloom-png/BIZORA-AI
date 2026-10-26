@@ -46,6 +46,26 @@ export default function App() {
       if (!r.ok) throw new Error('API unavailable');
       return r.json();
     }).then(() => setApiStatus('online')).catch(() => setApiStatus('offline'));
+    const initData = window.Telegram?.WebApp?.initData || '';
+    if (initData) {
+      fetch(base + '/api/conversations?limit=1', {
+        headers: { 'X-Telegram-Init-Data': initData },
+      }).then(r => r.ok ? r.json() : Promise.reject(new Error('History unavailable')))
+        .then(async data => {
+          const latest = data.conversations?.[0];
+          if (!latest || typeof latest.id !== 'number') return;
+          const historyResponse = await fetch(base + '/api/conversations/' + latest.id + '/messages?limit=100', {
+            headers: { 'X-Telegram-Init-Data': initData },
+          });
+          if (!historyResponse.ok) return;
+          const history = await historyResponse.json();
+          setConversationId(latest.id);
+          setMessages((history.messages || []).map((item: { role: string; content: string }) => ({
+            role: (item.role === 'user' ? 'user' : 'assistant') as Message['role'],
+            text: item.content,
+          })));
+        }).catch(() => undefined);
+    }
   }, []);
 
   async function sendMessage(text = query) {

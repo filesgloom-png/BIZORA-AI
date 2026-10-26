@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import (
     ConversationRecord, MessageRecord, UserRecord, check_and_record_usage,
-    ensure_user, get_db, initialize_database,
+    ensure_user, get_db,
 )
 
 import httpx
@@ -113,7 +113,7 @@ def require_owner(user: dict = Depends(get_current_telegram_user)) -> dict:
     return user
 
 
-def request_ai_reply(message: str) -> str:
+def request_ai_reply(message: str, history: list[dict[str, str]] | None = None) -> str:
     """Call an OpenAI-compatible chat-completions endpoint without exposing provider errors."""
     try:
         response = httpx.post(
@@ -132,7 +132,7 @@ def request_ai_reply(message: str) -> str:
                             "структурированно, конкретно и честно. Если данных не хватает, уточняй."
                         ),
                     },
-                    {"role": "user", "content": message},
+                    *(history or [{"role": "user", "content": message}]),
                 ],
                 "temperature": 0.7,
                 "max_tokens": 700,
@@ -169,11 +169,6 @@ def public_config():
         "telegram_auth_configured": bool(settings.telegram_bot_token),
         "history_enabled": True,
     }
-
-
-@app.on_event("startup")
-def startup():
-    initialize_database()
 
 
 @app.post("/api/auth/telegram")
@@ -267,6 +262,7 @@ def demo_chat(
     else:
         conversation = _conversation_for_user(db, request.conversation_id, user["id"])
     db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
+    db.flush()
     conversation.updated_at = datetime.now(timezone.utc)
 
     if not settings.ai_provider_api_key:
@@ -284,7 +280,18 @@ def demo_chat(
     try:
         check_and_record_usage(db, user, limit)
         db.commit()
-        reply = request_ai_reply(message)
+        recent_rows = db.scalars(
+            select(MessageRecord)
+            .where(MessageRecord.conversation_id == conversation.id)
+            .order_by(MessageRecord.id.desc())
+            .limit(20)
+        ).all()
+        history = [
+            {"role": row.role, "content": row.content}
+            for row in reversed(recent_rows)
+            if row.role in {"user", "assistant"}
+        ]
+        reply = request_ai_reply(message, history=history)
     except HTTPException:
         db.rollback()
         raise

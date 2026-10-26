@@ -277,3 +277,43 @@ def test_user_cannot_read_another_users_conversation(monkeypatch):
     conversation_id = created.json()["conversation_id"]
     response = client.get(f"/api/conversations/{conversation_id}/messages", headers=other_headers)
     assert response.status_code == 404
+
+
+def test_ai_provider_receives_persisted_conversation_context(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "server-side-test-key")
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {"choices": [{"message": {"content": "Follow-up answer"}}]}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(main_module.httpx, "post", fake_post)
+    headers = {"X-Telegram-Init-Data": make_init_data(929292)}
+    first = client.post("/api/chat/demo", json={"message": "My product is coffee"}, headers=headers)
+    conversation_id = first.json()["conversation_id"]
+    second = client.post("/api/chat/demo", json={"message": "Write a slogan for it", "conversation_id": conversation_id}, headers=headers)
+    assert second.status_code == 200
+    sent = captured["json"]["messages"]
+    assert sent[0]["role"] == "system"
+    assert any(item["role"] == "user" and item["content"] == "My product is coffee" for item in sent)
+    assert sent[-1] == {"role": "user", "content": "Write a slogan for it"}
+
+
+def test_database_supports_large_telegram_ids(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "")
+    telegram_id = 4_500_000_000
+    headers = {"X-Telegram-Init-Data": make_init_data(telegram_id)}
+    response = client.post("/api/chat/demo", json={"message": "Large ID test"}, headers=headers)
+    assert response.status_code == 200
+    listing = client.get("/api/conversations", headers=headers)
+    assert listing.status_code == 200
+    assert listing.json()["conversations"][0]["id"] == response.json()["conversation_id"]

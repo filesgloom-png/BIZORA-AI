@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from app.config import settings
@@ -29,7 +29,7 @@ class Base(DeclarativeBase):
 
 class UserRecord(Base):
     __tablename__ = "users"
-    telegram_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     first_name: Mapped[str] = mapped_column(String(128), default="")
     username: Mapped[str | None] = mapped_column(String(128), nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="user")
@@ -42,7 +42,7 @@ class ConversationRecord(Base):
     __tablename__ = "conversations"
     __table_args__ = (Index("ix_conversations_user_updated", "telegram_id", "updated_at"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(ForeignKey("users.telegram_id", ondelete="CASCADE"), index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(160), default="Новый диалог")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -94,6 +94,8 @@ def ensure_user(db: Session, user: dict):
 
 
 def check_and_record_usage(db: Session, user: dict, limit: int):
+    # PostgreSQL row lock serializes quota checks for this user until commit.
+    db.scalar(select(UserRecord).where(UserRecord.telegram_id == user["id"]).with_for_update())
     now = datetime.now(timezone.utc)
     cutoff = datetime.fromtimestamp(now.timestamp() - 3600, tz=timezone.utc)
     count = db.scalar(select(func.count(UsageEvent.id)).where(
@@ -105,5 +107,3 @@ def check_and_record_usage(db: Session, user: dict, limit: int):
     db.add(UsageEvent(telegram_id=user["id"], created_at=now))
     db.flush()
 
-
-initialize_database()
