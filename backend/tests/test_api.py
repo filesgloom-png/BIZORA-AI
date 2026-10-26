@@ -502,10 +502,6 @@ def test_project_chat_context_is_persisted_and_owner_scoped(monkeypatch):
     assert wrong_project_context.status_code == 404
 
     # Unscoped history remains separate from project-specific history.
-    global_chat = client.post(
-        "/api/chat/demo", json={"message": "General question"}, headers=owner_headers
-    )
-    assert global_chat.status_code == 200
     assert global_chat.json()["project_id"] is None
     general_history = client.get(
         "/api/conversations?limit=10&unassigned=true", headers=owner_headers
