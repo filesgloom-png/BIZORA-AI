@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.main import app, settings, verify_telegram_init_data
-from app.database import ConversationRecord, MessageRecord, SessionLocal, UsageEvent, UserRecord, initialize_database
+from app.database import ConversationRecord, MessageRecord, ProjectRecord, SessionLocal, UsageEvent, UserRecord, WorkspaceRecord, initialize_database
 
 client = TestClient(app)
 initialize_database()
@@ -24,6 +24,8 @@ def clear_test_database():
     initialize_database()
     with SessionLocal() as db:
         db.query(UsageEvent).delete()
+        db.query(ProjectRecord).delete()
+        db.query(WorkspaceRecord).delete()
         db.query(MessageRecord).delete()
         db.query(ConversationRecord).delete()
         db.query(UserRecord).delete()
@@ -372,3 +374,48 @@ def test_postgres_quota_lock_serializes_concurrent_requests(monkeypatch):
             cleanup.query(UsageEvent).filter(UsageEvent.telegram_id == user_id).delete()
             cleanup.query(UserRecord).filter(UserRecord.telegram_id == user_id).delete()
             cleanup.commit()
+
+
+
+def test_workspace_and_project_crud_is_persisted_and_owner_scoped(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(232323)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(343434)}
+
+    created = client.post(
+        "/api/workspaces",
+        json={"name": "  Coffee launch  ", "description": "Go-to-market plan"},
+        headers=owner_headers,
+    )
+    assert created.status_code == 201
+    workspace = created.json()["workspace"]
+    assert workspace["name"] == "Coffee launch"
+
+    workspace_list = client.get("/api/workspaces", headers=owner_headers)
+    assert workspace_list.status_code == 200
+    assert workspace_list.json()["workspaces"][0]["id"] == workspace["id"]
+
+    project_response = client.post(
+        f"/api/workspaces/{workspace['id']}/projects",
+        json={"title": "  Brand campaign ", "description": "First launch"},
+        headers=owner_headers,
+    )
+    assert project_response.status_code == 201
+    project = project_response.json()["project"]
+    assert project["title"] == "Brand campaign"
+    assert project["workspace_id"] == workspace["id"]
+
+    listed = client.get(f"/api/workspaces/{workspace['id']}/projects", headers=owner_headers)
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()["projects"]] == [project["id"]]
+    assert client.get("/api/projects", headers=owner_headers).json()["projects"][0]["id"] == project["id"]
+
+    assert client.get("/api/workspaces", headers=other_headers).json()["workspaces"] == []
+    forbidden = client.get(f"/api/workspaces/{workspace['id']}/projects", headers=other_headers)
+    assert forbidden.status_code == 404
+    cannot_create = client.post(
+        f"/api/workspaces/{workspace['id']}/projects",
+        json={"title": "Should not leak"},
+        headers=other_headers,
+    )
+    assert cannot_create.status_code == 404

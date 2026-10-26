@@ -36,8 +36,76 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+    const [workspaces, setWorkspaces] = useState<{ id: number; name: string; description: string }[]>([]);
+    const [projects, setProjects] = useState<{ id: number; workspace_id: number; title: string; description: string; status: string }[]>([]);
+    const [newWorkspaceName, setNewWorkspaceName] = useState('');
+    const [newWorkspaceDescription, setNewWorkspaceDescription] = useState('');
+    const [newProjectTitle, setNewProjectTitle] = useState('');
+    const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null);
+    const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const firstName = window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || 'Предприниматель';
 
+  async function loadProjects() {
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const initData = window.Telegram?.WebApp?.initData || '';
+    if (!initData) return;
+    const headers = { 'X-Telegram-Init-Data': initData };
+    const [workspaceResponse, projectResponse] = await Promise.all([
+      fetch(base + '/api/workspaces', { headers }),
+      fetch(base + '/api/projects', { headers }),
+    ]);
+    if (!workspaceResponse.ok || !projectResponse.ok) throw new Error('Не удалось загрузить проекты');
+    const workspaceData = await workspaceResponse.json();
+    const projectData = await projectResponse.json();
+    setWorkspaces(workspaceData.workspaces || []);
+    setProjects(projectData.projects || []);
+    setActiveWorkspaceId((current) => current ?? workspaceData.workspaces?.[0]?.id ?? null);
+  }
+
+  async function createWorkspace(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!newWorkspaceName.trim() || workspaceBusy) return;
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    setWorkspaceBusy(true);
+    try {
+      const response = await fetch(base + '/api/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
+        body: JSON.stringify({ name: newWorkspaceName, description: newWorkspaceDescription }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Не удалось создать пространство');
+      setNewWorkspaceName(''); setNewWorkspaceDescription('');
+      setActiveWorkspaceId(data.workspace.id);
+      setNotice('Рабочее пространство создано');
+      await loadProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка создания пространства');
+    } finally { setWorkspaceBusy(false); }
+  }
+
+  async function createProject(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeWorkspaceId || !newProjectTitle.trim() || workspaceBusy) return;
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    setWorkspaceBusy(true);
+    try {
+      const response = await fetch(base + '/api/workspaces/' + activeWorkspaceId + '/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
+        body: JSON.stringify({ title: newProjectTitle }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Не удалось создать проект');
+      setNewProjectTitle('');
+      setNotice('Проект сохранён');
+      await loadProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка создания проекта');
+    } finally { setWorkspaceBusy(false); }
+  }
   useEffect(() => {
     window.Telegram?.WebApp?.ready();
     window.Telegram?.WebApp?.expand();
@@ -48,6 +116,7 @@ export default function App() {
     }).then(() => setApiStatus('online')).catch(() => setApiStatus('offline'));
     const initData = window.Telegram?.WebApp?.initData || '';
     if (initData) {
+      void loadProjects().catch(() => undefined);
       fetch(base + '/api/conversations?limit=1', {
         headers: { 'X-Telegram-Init-Data': initData },
       }).then(r => r.ok ? r.json() : Promise.reject(new Error('History unavailable')))
@@ -145,7 +214,18 @@ export default function App() {
 
         {tab === 'work' && <section className="page-section"><div className="eyebrow">BUSINESS TOOLKIT</div><h1>Рабочие <span>инструменты</span></h1><p className="muted">Восемь направлений. Один рабочий центр.</p>{tools.map(t => { const Icon = t.icon; return <button className="wide-tool" key={t.id} onClick={() => openTool(t.id)}><div className={'tool-icon ' + t.color}><Icon size={20} /></div><div className="wide-tool-copy"><strong>{t.title}</strong><span>{t.text}</span></div><ChevronRight size={18} /></button>; })}<div className="coming-card"><CircleHelp size={18} /><div><strong>Новые модули в разработке</strong><p>CRM, исследования, документы и автоматизации добавим поэтапно.</p></div></div></section>}
 
-        {tab === 'projects' && <section className="page-section"><div className="eyebrow">YOUR WORKSPACE</div><h1>Твои <span>проекты</span></h1><p className="muted">Здесь будут храниться рабочие пространства и результаты AI.</p><div className="empty-projects"><div className="empty-orb"><FolderKanban size={25} /></div><h3>Начни с первого проекта</h3><p>Храни идеи, задачи и материалы бизнеса вместе.</p><button className="primary-button" onClick={() => setNotice('Создание проектов подключим после backend и базы данных.')}><Plus size={16} /> Новый проект</button></div></section>}
+        {tab === 'projects' && <section className="page-section"><div className="eyebrow">YOUR WORKSPACE</div><h1>Твои <span>проекты</span></h1><p className="muted">Создавай рабочие пространства и собирай проекты бизнеса в одном месте.</p>
+          <form className="workspace-form" onSubmit={createWorkspace}>
+            <strong>Новое рабочее пространство</strong>
+            <input value={newWorkspaceName} onChange={e => setNewWorkspaceName(e.target.value)} placeholder="Например, Мой бизнес" maxLength={120} required />
+            <input value={newWorkspaceDescription} onChange={e => setNewWorkspaceDescription(e.target.value)} placeholder="Описание (необязательно)" maxLength={2000} />
+            <button className="primary-button" type="submit" disabled={workspaceBusy || !newWorkspaceName.trim()}><Plus size={16} /> Создать пространство</button>
+          </form>
+          {workspaces.length === 0 ? <div className="empty-projects"><div className="empty-orb"><FolderKanban size={25} /></div><h3>Пока нет пространств</h3><p>Создай первое пространство — оно будет сохранено в базе данных и доступно только твоему Telegram-аккаунту.</p></div> : <div className="workspace-list">{workspaces.map(workspace => <section className={activeWorkspaceId === workspace.id ? 'workspace-card selected' : 'workspace-card'} key={workspace.id}>
+            <button className="workspace-heading" onClick={() => setActiveWorkspaceId(workspace.id)}><div className="tool-icon violet"><BriefcaseBusiness size={18} /></div><div className="wide-tool-copy"><strong>{workspace.name}</strong><span>{workspace.description || 'Рабочее пространство'} · {projects.filter(project => project.workspace_id === workspace.id).length} проектов</span></div><ChevronRight size={17} /></button>
+            {activeWorkspaceId === workspace.id && <><form className="project-form" onSubmit={createProject}><input value={newProjectTitle} onChange={e => setNewProjectTitle(e.target.value)} placeholder="Название нового проекта" maxLength={160} required /><button type="submit" disabled={workspaceBusy || !newProjectTitle.trim()} aria-label="Создать проект"><Plus size={17} /></button></form><div className="project-list">{projects.filter(project => project.workspace_id === workspace.id).map(project => <div className="project-row" key={project.id}><div className="project-mark"><FolderKanban size={16} /></div><div className="wide-tool-copy"><strong>{project.title}</strong><span>{project.description || 'Проект бизнеса'} · {project.status === 'active' ? 'Активный' : project.status}</span></div><span className="project-status" /></div>)}</div></>}
+          </section>)}</div>}
+        </section>}
 
         {tab === 'profile' && <section className="page-section"><div className="eyebrow">ACCOUNT & ACCESS</div><h1>Твой <span>профиль</span></h1><div className="profile-card"><div className="avatar">{firstName.slice(0, 1).toUpperCase()}</div><div><strong>{firstName}</strong><p>Telegram Mini App · Preview</p></div></div><div className="profile-row"><span><Gem size={17} /> Текущий тариф</span><strong>START</strong></div><div className="profile-row"><span><Zap size={17} /> AI-кредиты</span><strong>Демо</strong></div><div className="profile-row"><span><LockKeyhole size={17} /> Безопасность</span><strong>Серверный этап</strong></div><button className="wide-tool" onClick={() => setNotice('Настройки тарифа появятся после подключения серверной авторизации.')}><Gem size={19} /><div className="wide-tool-copy"><strong>Тарифы и доступ</strong><span>Управление подпиской и преимуществами</span></div><ChevronRight size={18} /></button></section>}
       </main>

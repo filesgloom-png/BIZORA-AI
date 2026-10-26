@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import (
-    ConversationRecord, MessageRecord, UserRecord, check_and_record_usage,
-    ensure_user, get_db,
+    ConversationRecord, MessageRecord, ProjectRecord, UserRecord, WorkspaceRecord,
+    check_and_record_usage, ensure_user, get_db,
 )
 
 import httpx
@@ -33,6 +33,16 @@ app.add_middleware(
 class DemoChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: int | None = Field(default=None, gt=0)
+
+
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+
+
+class ProjectCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=4000)
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400) -> dict:
@@ -198,6 +208,127 @@ def current_user(user: dict = Depends(get_current_telegram_user), db: Session = 
 @app.get("/api/owner")
 def owner_dashboard(user: dict = Depends(require_owner)):
     return {"authorized": True, "role": "owner", "user_id": user["id"]}
+
+
+def _workspace_for_user(db: Session, workspace_id: int, user_id: int) -> WorkspaceRecord:
+    workspace = db.scalar(select(WorkspaceRecord).where(
+        WorkspaceRecord.id == workspace_id,
+        WorkspaceRecord.owner_telegram_id == user_id,
+    ))
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return workspace
+
+
+@app.get("/api/workspaces")
+def list_workspaces(
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    ensure_user(db, user)
+    rows = db.scalars(
+        select(WorkspaceRecord)
+        .where(WorkspaceRecord.owner_telegram_id == user["id"])
+        .order_by(WorkspaceRecord.updated_at.desc(), WorkspaceRecord.id.desc())
+    ).all()
+    db.commit()
+    return {"workspaces": [
+        {"id": row.id, "name": row.name, "description": row.description,
+         "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
+        for row in rows
+    ]}
+
+
+@app.post("/api/workspaces", status_code=201)
+def create_workspace(
+    request: WorkspaceCreate,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Workspace name cannot be empty")
+    ensure_user(db, user)
+    now = datetime.now(timezone.utc)
+    row = WorkspaceRecord(
+        owner_telegram_id=user["id"], name=name,
+        description=request.description.strip(), created_at=now, updated_at=now,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"workspace": {
+        "id": row.id, "name": row.name, "description": row.description,
+        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+    }}
+
+
+@app.get("/api/projects")
+def list_projects(
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    rows = db.scalars(
+        select(ProjectRecord)
+        .where(ProjectRecord.owner_telegram_id == user["id"])
+        .order_by(ProjectRecord.updated_at.desc(), ProjectRecord.id.desc())
+    ).all()
+    return {"projects": [
+        {"id": row.id, "workspace_id": row.workspace_id, "title": row.title,
+         "description": row.description, "status": row.status,
+         "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
+        for row in rows
+    ]}
+
+
+@app.get("/api/workspaces/{workspace_id}/projects")
+def list_workspace_projects(
+    workspace_id: int,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    _workspace_for_user(db, workspace_id, user["id"])
+    rows = db.scalars(
+        select(ProjectRecord)
+        .where(
+            ProjectRecord.workspace_id == workspace_id,
+            ProjectRecord.owner_telegram_id == user["id"],
+        )
+        .order_by(ProjectRecord.updated_at.desc(), ProjectRecord.id.desc())
+    ).all()
+    return {"projects": [
+        {"id": row.id, "workspace_id": row.workspace_id, "title": row.title,
+         "description": row.description, "status": row.status,
+         "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
+        for row in rows
+    ]}
+
+
+@app.post("/api/workspaces/{workspace_id}/projects", status_code=201)
+def create_project(
+    workspace_id: int,
+    request: ProjectCreate,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    _workspace_for_user(db, workspace_id, user["id"])
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Project title cannot be empty")
+    now = datetime.now(timezone.utc)
+    row = ProjectRecord(
+        workspace_id=workspace_id, owner_telegram_id=user["id"], title=title,
+        description=request.description.strip(), status="active",
+        created_at=now, updated_at=now,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"project": {
+        "id": row.id, "workspace_id": row.workspace_id, "title": row.title,
+        "description": row.description, "status": row.status,
+        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+    }}
 
 
 def _conversation_for_user(db: Session, conversation_id: int, user_id: int) -> ConversationRecord:
