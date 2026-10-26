@@ -12,22 +12,20 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column(
-        "conversations",
-        sa.Column("project_id", sa.Integer(), nullable=True),
-    )
-    op.create_foreign_key(
-        "fk_conversations_project_id_projects",
-        "conversations",
-        "projects",
-        ["project_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    with op.batch_alter_table("conversations") as batch_op:
+        batch_op.add_column(sa.Column("project_id", sa.Integer(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_conversations_project_id_projects",
+            "projects",
+            ["project_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
     op.create_index("ix_conversations_project_id", "conversations", ["project_id"])
 
 
 def downgrade():
     op.drop_index("ix_conversations_project_id", table_name="conversations")
-    op.drop_constraint("fk_conversations_project_id_projects", "conversations", type_="foreignkey")
-    op.drop_column("conversations", "project_id")
+    with op.batch_alter_table("conversations") as batch_op:
+        batch_op.drop_constraint("fk_conversations_project_id_projects", type_="foreignkey")
+        batch_op.drop_column("project_id")

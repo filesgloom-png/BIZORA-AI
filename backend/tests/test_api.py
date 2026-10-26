@@ -28,10 +28,6 @@ def clear_test_database():
         db.query(ConversationRecord).delete()
         db.query(ProjectRecord).delete()
         db.query(WorkspaceRecord).delete()
-        db.query(MessageRecord).delete()
-        db.query(ConversationRecord).delete()
-        db.query(ProjectRecord).delete()
-        db.query(WorkspaceRecord).delete()
         db.query(UserRecord).delete()
         db.commit()
 
@@ -491,6 +487,11 @@ def test_project_chat_context_is_persisted_and_owner_scoped(monkeypatch):
     )
     assert global_chat.status_code == 200
     assert global_chat.json()["project_id"] is None
+    general_history = client.get(
+        "/api/conversations?limit=10&unassigned=true", headers=owner_headers
+    )
+    assert general_history.status_code == 200
+    assert [item["id"] for item in general_history.json()["conversations"]] == [global_chat.json()["conversation_id"]]
     assert [item["id"] for item in client.get(
         f"/api/projects/{project_id}/conversations", headers=owner_headers
     ).json()["conversations"]] == [conversation_id]

@@ -56,7 +56,7 @@ export default function App() {
     const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
     try {
       const listUrl = projectId === null
-        ? base + '/api/conversations?limit=1'
+        ? base + '/api/conversations?limit=1&unassigned=true'
         : base + '/api/projects/' + projectId + '/conversations?limit=1';
       const response = await fetch(listUrl, { headers: { 'X-Telegram-Init-Data': initData } });
       if (!response.ok) throw new Error('Не удалось загрузить историю проекта');
@@ -150,7 +150,7 @@ export default function App() {
     const initData = window.Telegram?.WebApp?.initData || '';
     if (initData) {
       void loadProjects().catch(() => undefined);
-      fetch(base + '/api/conversations?limit=1', {
+      fetch(base + '/api/conversations?limit=1&unassigned=true', {
         headers: { 'X-Telegram-Init-Data': initData },
       }).then(r => r.ok ? r.json() : Promise.reject(new Error('History unavailable')))
         .then(async data => {

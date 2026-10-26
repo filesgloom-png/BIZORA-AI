@@ -378,10 +378,13 @@ def list_conversations(
     user: dict = Depends(get_current_telegram_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=100),
+    unassigned: bool = Query(default=False),
 ):
     ensure_user(db, user)
-    rows = db.scalars(select(ConversationRecord)
-        .where(ConversationRecord.telegram_id == user["id"])
+    query = select(ConversationRecord).where(ConversationRecord.telegram_id == user["id"])
+    if unassigned:
+        query = query.where(ConversationRecord.project_id.is_(None))
+    rows = db.scalars(query
         .order_by(ConversationRecord.updated_at.desc(), ConversationRecord.id.desc())
         .limit(limit)).all()
     db.commit()
