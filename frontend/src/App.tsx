@@ -98,7 +98,7 @@ export default function App() {
     persistContext(projectId, null);
     const initData = window.Telegram?.WebApp?.initData || '';
     if (!initData) return;
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     try {
       const listUrl = projectId === null ? base + '/api/conversations?limit=50&unassigned=true' : base + '/api/projects/' + projectId + '/conversations?limit=50';
       const response = await fetch(listUrl, { headers: { 'X-Telegram-Init-Data': initData } });
@@ -128,7 +128,7 @@ export default function App() {
     if (title === null) return;
     if (!title.trim()) { setNotice('Название диалога не может быть пустым'); return; }
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     try {
       const response = await fetch(base + '/api/conversations/' + conversation.id, {
         method: 'PATCH',
@@ -149,7 +149,7 @@ export default function App() {
     if (conversationBusy || !window.confirm('Удалить диалог «' + (conversation.title || 'Новый диалог') + '»? Все его сообщения будут удалены.')) return;
     setConversationBusy(true);
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     try {
       const response = await fetch(base + '/api/conversations/' + conversation.id, {
         method: 'DELETE', headers: { 'X-Telegram-Init-Data': initData },
@@ -175,7 +175,7 @@ export default function App() {
     if (conversationBusy) return;
     setConversationBusy(true);
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     try {
       const response = await fetch(base + '/api/conversations', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
@@ -194,7 +194,7 @@ export default function App() {
   async function saveProjectEdit(projectId: number) {
     if (!editProjectTitle.trim() || workspaceBusy) return;
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     setWorkspaceBusy(true);
     try {
       const response = await fetch(base + '/api/projects/' + projectId, {
@@ -212,7 +212,7 @@ export default function App() {
   async function deleteProject(project: Project) {
     if (workspaceBusy || !window.confirm('Удалить проект «' + project.title + '»? Для удаления в нём не должно быть диалогов.')) return;
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     setWorkspaceBusy(true);
     try {
       const response = await fetch(base + '/api/projects/' + project.id, { method: 'DELETE', headers: { 'X-Telegram-Init-Data': initData } });
@@ -225,7 +225,7 @@ export default function App() {
   }
 
   async function loadProjects() {
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     const initData = window.Telegram?.WebApp?.initData || '';
     if (!initData) return;
     const headers = { 'X-Telegram-Init-Data': initData };
@@ -245,7 +245,7 @@ export default function App() {
     event.preventDefault();
     if (!newWorkspaceName.trim() || workspaceBusy) return;
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     setWorkspaceBusy(true);
     try {
       const response = await fetch(base + '/api/workspaces', {
@@ -268,7 +268,7 @@ export default function App() {
     event.preventDefault();
     if (!activeWorkspaceId || !newProjectTitle.trim() || workspaceBusy) return;
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     setWorkspaceBusy(true);
     try {
       const response = await fetch(base + '/api/workspaces/' + activeWorkspaceId + '/projects', {
@@ -288,7 +288,7 @@ export default function App() {
   useEffect(() => {
     window.Telegram?.WebApp?.ready();
     window.Telegram?.WebApp?.expand();
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     fetch(base + '/api/health').then(r => {
       if (!r.ok) throw new Error('API unavailable');
       return r.json();
@@ -318,7 +318,7 @@ export default function App() {
     setTab('studio');
     setBusy(true);
     try {
-      const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+      const base = API_BASE_URL;
       const initData = window.Telegram?.WebApp?.initData || '';
       if (!initData) {
         throw new Error('Открой BIZORA AI внутри Telegram, чтобы подтвердить аккаунт.');
