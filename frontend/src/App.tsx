@@ -56,16 +56,24 @@ export default function App() {
     setBusy(true);
     try {
       const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+      const initData = window.Telegram?.WebApp?.initData || '';
+      if (!initData) {
+        throw new Error('Открой BIZORA AI внутри Telegram, чтобы подтвердить аккаунт.');
+      }
       const response = await fetch(base + '/api/chat/demo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Telegram-Init-Data': initData,
+        },
         body: JSON.stringify({ message: clean }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
       setMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', text: 'Интерфейс готов, но API пока не подключён. Следующий этап — развернуть backend и подключить AI-провайдера. Твой запрос не потерян: можно скопировать текст и повторить позже.' }]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Не удалось выполнить запрос';
+      setMessages(prev => [...prev, { role: 'assistant', text: message }]);
     } finally {
       setBusy(false);
     }
