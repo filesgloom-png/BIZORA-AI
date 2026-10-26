@@ -24,6 +24,12 @@ const prompts = [
   'Подготовь ответ сложному клиенту',
 ];
 
+// In production, default to the frontend origin; localhost is development-only.
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL?.trim() ||
+  (import.meta.env.DEV ? 'http://localhost:8000' : '')
+).replace(/\\/+$/, '');
+
 declare global {
   interface Window {
     Telegram?: { WebApp?: { ready: () => void; expand: () => void; initData?: string; initDataUnsafe?: { user?: { id?: number; first_name?: string } }; colorScheme?: string } };
@@ -44,6 +50,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [authStatus, setAuthStatus] = useState<'checking' | 'available' | 'missing'>('checking');
     const [workspaces, setWorkspaces] = useState<{ id: number; name: string; description: string }[]>([]);
     const [projects, setProjects] = useState<Project[]>([]);
     const [newWorkspaceName, setNewWorkspaceName] = useState('');
@@ -71,7 +78,7 @@ export default function App() {
   async function loadConversation(conversation: Conversation | number) {
     const id = typeof conversation === 'number' ? conversation : conversation.id;
     const initData = window.Telegram?.WebApp?.initData || '';
-    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const base = API_BASE_URL;
     const response = await fetch(base + '/api/conversations/' + id + '/messages?limit=100', {
       headers: { 'X-Telegram-Init-Data': initData },
     });
@@ -287,6 +294,7 @@ export default function App() {
       return r.json();
     }).then(() => setApiStatus('online')).catch(() => setApiStatus('offline'));
     const initData = window.Telegram?.WebApp?.initData || '';
+    setAuthStatus(initData ? 'available' : 'missing');
     if (initData) {
       void loadProjects().catch(() => undefined);
       let savedContext: { projectId?: number | null; conversationId?: number | null } = {};
@@ -384,10 +392,11 @@ export default function App() {
             <div className="tool-grid">{tools.map(tool => { const Icon = tool.icon; return <button className="tool-card" key={tool.id} onClick={() => openTool(tool.id)}><div className={'tool-icon ' + tool.color}><Icon size={20} /></div><strong>{tool.title}</strong><span>{tool.text}</span><ArrowUpRight className="tool-arrow" size={16} /></button>; })}</div>
           </section>
           <section className="section-block"><div className="section-heading"><div><div className="eyebrow">QUICK START</div><h2>Начни с идеи</h2></div></div><div className="prompt-list">{prompts.map(prompt => <button key={prompt} className="prompt-row" onClick={() => sendMessage(prompt)}><span>{prompt}</span><ChevronRight size={17} /></button>)}</div></section>
-          <div className="status-line"><span className={'status-dot ' + apiStatus} /> {apiStatus === 'online' ? 'Backend доступен' : apiStatus === 'offline' ? 'Backend ещё не подключён' : 'Проверяем соединение'} <span className="status-separator">·</span> MVP Preview</div>
+          <div className="status-line"><span className={'status-dot ' + apiStatus} /> {apiStatus === 'online' ? 'Backend доступен' : apiStatus === 'offline' ? 'Backend недоступен' : 'Проверяем API'} <span className="status-separator">·</span> {authStatus === 'available' ? 'Telegram подключён' : authStatus === 'missing' ? 'Открой приложение внутри Telegram' : 'Проверяем Telegram'}</div>
         </>}
 
         {tab === 'studio' && <section className="studio-page"><div className="eyebrow"><Sparkles size={13} /> YOUR AI COPILOT</div><h1>AI <span>Studio</span></h1><p className="muted">Преврати задачу в готовый результат.</p>
+          <div className="status-line"><span className={'status-dot ' + apiStatus} /> {apiStatus === 'online' ? 'Backend доступен' : apiStatus === 'offline' ? 'Backend недоступен' : 'Проверяем API'} <span className="status-separator">·</span> {authStatus === 'available' ? 'Telegram подключён' : authStatus === 'missing' ? 'Открой приложение внутри Telegram' : 'Проверяем Telegram'}</div>
           <label className="project-context-label">Контекст диалога
             <select value={activeProjectId ?? ''} onChange={e => { void selectProject(e.target.value ? Number(e.target.value) : null); }}>
               <option value="">Общий чат — без проекта</option>
