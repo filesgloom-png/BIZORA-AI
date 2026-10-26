@@ -210,8 +210,6 @@ def test_ai_provider_rate_limit_is_enforced(monkeypatch):
     monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
     monkeypatch.setattr(settings, "ai_provider_api_key", "server-side-test-key")
     monkeypatch.setattr(settings, "user_hourly_ai_limit", 1)
-    main_module._ai_request_times.clear()
-
     class FakeResponse:
         status_code = 200
 
@@ -232,8 +230,6 @@ def test_ai_provider_rate_limit_is_enforced(monkeypatch):
 def test_ai_provider_failure_is_reported_without_leaking_details(monkeypatch):
     monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
     monkeypatch.setattr(settings, "ai_provider_api_key", "server-side-test-key")
-    main_module._ai_request_times.clear()
-
     class FakeResponse:
         status_code = 500
 
