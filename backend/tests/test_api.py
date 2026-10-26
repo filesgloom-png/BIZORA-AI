@@ -43,15 +43,25 @@ def test_public_config_does_not_expose_secrets():
     assert "telegram_bot_token" not in payload
 
 
-def test_demo_chat_returns_honest_placeholder():
-    response = client.post("/api/chat/demo", json={"message": "Plan my business"})
+def test_demo_chat_returns_honest_placeholder(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    response = client.post(
+        "/api/chat/demo",
+        json={"message": "Plan my business"},
+        headers={"X-Telegram-Init-Data": make_init_data()},
+    )
     assert response.status_code == 200
     assert response.json()["mode"] == "demo"
     assert "демонстрационный режим" in response.json()["reply"]
 
 
-def test_demo_chat_rejects_empty_message():
-    response = client.post("/api/chat/demo", json={"message": "   "})
+def test_demo_chat_rejects_empty_message(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    response = client.post(
+        "/api/chat/demo",
+        json={"message": "   "},
+        headers={"X-Telegram-Init-Data": make_init_data()},
+    )
     assert response.status_code == 422
 
 
@@ -139,3 +149,9 @@ def test_owner_endpoint_accepts_configured_owner(monkeypatch):
     assert response.status_code == 200
     assert response.json()["authorized"] is True
     assert response.json()["user_id"] == 123456
+
+
+def test_demo_chat_rejects_missing_telegram_auth(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    response = client.post("/api/chat/demo", json={"message": "Plan my business"})
+    assert response.status_code == 401
