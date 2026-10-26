@@ -1,9 +1,11 @@
 import hashlib
 import hmac
 import json
+import threading
 import time
 from urllib.parse import parse_qsl
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -15,13 +17,17 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     owner_telegram_ids: str = ""
     ai_provider_api_key: str = ""
+    ai_provider_base_url: str = "https://api.openai.com/v1/chat/completions"
+    ai_model: str = "gpt-4o-mini"
+    user_hourly_ai_limit: int = 20
+    owner_hourly_ai_limit: int = 200
     frontend_origins: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()
-app = FastAPI(title="BIZORA AI API", version="0.2.0")
+app = FastAPI(title="BIZORA AI API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.frontend_origins.split(",") if origin.strip()],
@@ -33,6 +39,10 @@ app.add_middleware(
 
 class DemoChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
+
+
+_ai_request_times: dict[int, list[float]] = {}
+_ai_request_lock = threading.Lock()
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400) -> dict:
@@ -113,9 +123,68 @@ def require_owner(user: dict = Depends(get_current_telegram_user)) -> dict:
     return user
 
 
+def enforce_ai_rate_limit(user: dict) -> None:
+    """Basic in-memory hourly guardrail; use shared persistent storage in production."""
+    now = time.time()
+    limit = settings.owner_hourly_ai_limit if user["role"] == "owner" else settings.user_hourly_ai_limit
+    with _ai_request_lock:
+        for user_id, timestamps in list(_ai_request_times.items()):
+            recent = [stamp for stamp in timestamps if now - stamp < 3600]
+            if recent:
+                _ai_request_times[user_id] = recent
+            else:
+                _ai_request_times.pop(user_id, None)
+        recent = _ai_request_times.setdefault(user["id"], [])
+        if len(recent) >= max(1, limit):
+            raise HTTPException(status_code=429, detail="Hourly AI request limit reached. Try again later.")
+        recent.append(now)
+
+
+def request_ai_reply(message: str) -> str:
+    """Call an OpenAI-compatible chat-completions endpoint without exposing provider errors."""
+    try:
+        response = httpx.post(
+            settings.ai_provider_base_url,
+            headers={
+                "Authorization": f"Bearer {settings.ai_provider_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.ai_model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты BIZORA AI — практичный бизнес-ассистент. Отвечай на языке пользователя, "
+                            "структурированно, конкретно и честно. Если данных не хватает, уточняй."
+                        ),
+                    },
+                    {"role": "user", "content": message},
+                ],
+                "temperature": 0.7,
+                "max_tokens": 700,
+            },
+            timeout=30.0,
+        )
+        if response.status_code == 429:
+            raise HTTPException(status_code=503, detail="AI provider is temporarily busy. Try again later.")
+        response.raise_for_status()
+        payload = response.json()
+        reply = payload["choices"][0]["message"]["content"]
+        if not isinstance(reply, str) or not reply.strip():
+            raise ValueError("Empty AI response")
+        return reply.strip()
+    except HTTPException:
+        raise
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="AI provider timed out. Please try again.") from exc
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="AI provider request failed. Please try again later.") from exc
+
+
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "bizora-ai-api", "version": "0.2.0"}
+    return {"status": "ok", "service": "bizora-ai-api", "version": "0.3.0"}
 
 
 @app.get("/api/config")
@@ -157,14 +226,17 @@ def owner_dashboard(user: dict = Depends(require_owner)):
 def demo_chat(request: DemoChatRequest, user: dict = Depends(get_current_telegram_user)):
     if not request.message.strip():
         raise HTTPException(status_code=422, detail="Message cannot be empty")
-    if settings.ai_provider_api_key:
-        raise HTTPException(status_code=501, detail="AI provider integration is not implemented yet")
-    return {
-        "mode": "demo",
-        "reply": (
-            "BIZORA AI принял задачу. Сейчас включён демонстрационный режим — "
-            "AI-провайдер ещё не подключён, поэтому я не буду выдавать шаблонный текст "
-            "за результат настоящей нейросети. Следующий этап — подключение модели, "
-            "лимитов и сохранения истории."
-        ),
-    }
+    if not settings.ai_provider_api_key:
+        return {
+            "mode": "demo",
+            "reply": (
+                "BIZORA AI принял задачу. Сейчас включён демонстрационный режим — "
+                "AI-провайдер ещё не подключён, поэтому я не буду выдавать шаблонный текст "
+                "за результат настоящей нейросети. Добавь ключ провайдера в переменные окружения "
+                "backend, чтобы включить настоящие ответы AI."
+            ),
+        }
+
+    enforce_ai_rate_limit(user)
+    reply = request_ai_reply(request.message.strip())
+    return {"mode": "ai", "reply": reply, "model": settings.ai_model}
