@@ -24,7 +24,7 @@ def test_demo_chat_returns_honest_placeholder():
     response = client.post("/api/chat/demo", json={"message": "Plan my business"})
     assert response.status_code == 200
     assert response.json()["mode"] == "demo"
-    assert "демонстрационном режиме" in response.json()["reply"]
+    assert "демонстрационный режим" in response.json()["reply"]
 
 
 def test_demo_chat_rejects_empty_message():
