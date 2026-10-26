@@ -495,3 +495,45 @@ def test_project_chat_context_is_persisted_and_owner_scoped(monkeypatch):
     assert [item["id"] for item in client.get(
         f"/api/projects/{project_id}/conversations", headers=owner_headers
     ).json()["conversations"]] == [conversation_id]
+
+
+def test_multiple_conversations_are_persisted_and_isolated_by_project_and_user(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(787878)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(898989)}
+    workspace = client.post("/api/workspaces", json={"name": "Dialog workspace"}, headers=owner_headers).json()["workspace"]
+    project = client.post(f"/api/workspaces/{workspace['id']}/projects", json={"title": "Project A"}, headers=owner_headers).json()["project"]
+    other_workspace = client.post("/api/workspaces", json={"name": "Other workspace"}, headers=other_headers).json()["workspace"]
+    other_project = client.post(f"/api/workspaces/{other_workspace['id']}/projects", json={"title": "Project B"}, headers=other_headers).json()["project"]
+    first = client.post("/api/conversations", json={"title": "First", "project_id": project["id"]}, headers=owner_headers)
+    second = client.post("/api/conversations", json={"title": "Second", "project_id": project["id"]}, headers=owner_headers)
+    assert first.status_code == 201 and second.status_code == 201
+    first_id, second_id = first.json()["conversation"]["id"], second.json()["conversation"]["id"]
+    listed = client.get(f"/api/projects/{project['id']}/conversations", headers=owner_headers)
+    assert {row["id"] for row in listed.json()["conversations"]} == {first_id, second_id}
+    assert client.get(f"/api/conversations/{first_id}/messages", headers=other_headers).status_code == 404
+    assert client.get(f"/api/projects/{project['id']}/conversations", headers=other_headers).status_code == 404
+    assert client.post("/api/conversations", json={"title": "Forged", "project_id": project["id"]}, headers=other_headers).status_code == 404
+    assert client.get(f"/api/projects/{other_project['id']}/conversations", headers=other_headers).status_code == 200
+
+
+def test_project_update_and_delete_are_owner_scoped_and_preserve_linked_history(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(919191)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(929393)}
+    workspace = client.post("/api/workspaces", json={"name": "CRUD"}, headers=owner_headers).json()["workspace"]
+    project = client.post(f"/api/workspaces/{workspace['id']}/projects", json={"title": "Before"}, headers=owner_headers).json()["project"]
+    update = client.patch(f"/api/projects/{project['id']}", json={"title": "  After  ", "description": "  Updated  "}, headers=owner_headers)
+    assert update.status_code == 200
+    assert update.json()["project"]["title"] == "After"
+    assert update.json()["project"]["description"] == "Updated"
+    assert client.patch(f"/api/projects/{project['id']}", json={"title": "Hijack"}, headers=other_headers).status_code == 404
+    assert client.delete(f"/api/projects/{project['id']}", headers=other_headers).status_code == 404
+    conversation = client.post("/api/conversations", json={"title": "History", "project_id": project["id"]}, headers=owner_headers).json()["conversation"]
+    blocked = client.delete(f"/api/projects/{project['id']}", headers=owner_headers)
+    assert blocked.status_code == 409
+    assert client.get(f"/api/projects/{project['id']}/conversations", headers=owner_headers).json()["conversations"][0]["id"] == conversation["id"]
+    empty_project = client.post(f"/api/workspaces/{workspace['id']}/projects", json={"title": "Empty"}, headers=owner_headers).json()["project"]
+    deleted = client.delete(f"/api/projects/{empty_project['id']}", headers=owner_headers)
+    assert deleted.status_code == 204
+    assert all(item["id"] != empty_project["id"] for item in client.get("/api/projects", headers=owner_headers).json()["projects"])

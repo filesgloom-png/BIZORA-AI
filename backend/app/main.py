@@ -25,7 +25,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.frontend_origins.split(",") if origin.strip()],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "X-Telegram-Init-Data"],
 )
 
@@ -44,6 +44,16 @@ class WorkspaceCreate(BaseModel):
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=4000)
+
+
+class ProjectUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=4000)
+
+
+class ConversationCreate(BaseModel):
+    title: str = Field(default="Новый диалог", min_length=1, max_length=160)
+    project_id: int | None = Field(default=None, gt=0)
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400) -> dict:
@@ -332,6 +342,33 @@ def create_project(
     }}
 
 
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: int, request: ProjectUpdate, user: dict = Depends(get_current_telegram_user), db: Session = Depends(get_db)):
+    project = _project_for_user(db, project_id, user["id"])
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Project title cannot be empty")
+    project.title = title
+    project.description = request.description.strip()
+    project.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(project)
+    return {"project": {"id": project.id, "workspace_id": project.workspace_id, "title": project.title,
+        "description": project.description, "status": project.status,
+        "created_at": project.created_at.isoformat(), "updated_at": project.updated_at.isoformat()}}
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+def delete_project(project_id: int, user: dict = Depends(get_current_telegram_user), db: Session = Depends(get_db)):
+    project = _project_for_user(db, project_id, user["id"])
+    linked = db.scalar(select(ConversationRecord.id).where(ConversationRecord.project_id == project_id).limit(1))
+    if linked is not None:
+        raise HTTPException(status_code=409, detail="В проекте есть диалоги. Удалите их или перенесите перед удалением проекта.")
+    db.delete(project)
+    db.commit()
+    return None
+
+
 def _conversation_for_user(db: Session, conversation_id: int, user_id: int) -> ConversationRecord:
     conversation = db.scalar(select(ConversationRecord).where(
         ConversationRecord.id == conversation_id,
@@ -371,6 +408,21 @@ def list_project_conversations(
          "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
         for row in rows
     ]}
+
+
+@app.post("/api/conversations", status_code=201)
+def create_conversation(request: ConversationCreate, user: dict = Depends(get_current_telegram_user), db: Session = Depends(get_db)):
+    title = request.title.strip() or "Новый диалог"
+    ensure_user(db, user)
+    if request.project_id is not None:
+        _project_for_user(db, request.project_id, user["id"])
+    now = datetime.now(timezone.utc)
+    row = ConversationRecord(telegram_id=user["id"], title=title[:160], project_id=request.project_id, created_at=now, updated_at=now)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"conversation": {"id": row.id, "project_id": row.project_id, "title": row.title,
+        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}}
 
 
 @app.get("/api/conversations")
@@ -434,6 +486,8 @@ def demo_chat(
         conversation = _conversation_for_user(db, request.conversation_id, user["id"])
         if request.project_id is not None and conversation.project_id != request.project_id:
             raise HTTPException(status_code=404, detail="Conversation not found in this project")
+    if conversation.title == "Новый диалог":
+        conversation.title = message[:80]
     db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
     db.flush()
     conversation.updated_at = datetime.now(timezone.utc)

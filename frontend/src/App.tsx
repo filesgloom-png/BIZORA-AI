@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ArrowUpRight, Bot, BriefcaseBusiness, Check, ChevronRight, CircleHelp,
-  Command, FileSpreadsheet, FolderKanban, Gem, LayoutDashboard, LockKeyhole,
+  Command, FileSpreadsheet, FolderKanban, Gem, LayoutDashboard, LockKeyhole, Pencil, Trash2,
   MessageSquareText, Plus, Search, Send, Settings2, Sparkles, WandSparkles,
   Workflow, Zap
 } from 'lucide-react';
@@ -9,6 +9,7 @@ import {
 type Tab = 'home' | 'studio' | 'work' | 'projects' | 'profile';
 type Message = { role: 'user' | 'assistant'; text: string };
 type Project = { id: number; workspace_id: number; title: string; description: string; status: string };
+type Conversation = { id: number; project_id: number | null; title: string; created_at: string; updated_at: string };
 
 const tools = [
   { id: 'content', icon: WandSparkles, title: 'Контент-лаборатория', text: 'Посты, реклама и контент-планы', color: 'violet' },
@@ -34,6 +35,11 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationBusy, setConversationBusy] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState<number | null>(null);
+  const [editProjectTitle, setEditProjectTitle] = useState("");
+  const [editProjectDescription, setEditProjectDescription] = useState("");
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
@@ -47,6 +53,21 @@ export default function App() {
     const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const firstName = window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name || 'Предприниматель';
 
+  async function loadConversation(conversation: Conversation | number) {
+    const id = typeof conversation === 'number' ? conversation : conversation.id;
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    const response = await fetch(base + '/api/conversations/' + id + '/messages?limit=100', {
+      headers: { 'X-Telegram-Init-Data': initData },
+    });
+    if (!response.ok) throw new Error('Не удалось загрузить сообщения диалога');
+    const history = await response.json();
+    setConversationId(id);
+    setMessages((history.messages || []).map((item: { role: string; content: string }) => ({
+      role: (item.role === 'user' ? 'user' : 'assistant') as Message['role'], text: item.content,
+    })));
+  }
+
   async function selectProject(projectId: number | null) {
     setActiveProjectId(projectId);
     setConversationId(null);
@@ -55,27 +76,69 @@ export default function App() {
     if (!initData) return;
     const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
     try {
-      const listUrl = projectId === null
-        ? base + '/api/conversations?limit=1&unassigned=true'
-        : base + '/api/projects/' + projectId + '/conversations?limit=1';
+      const listUrl = projectId === null ? base + '/api/conversations?limit=50&unassigned=true' : base + '/api/projects/' + projectId + '/conversations?limit=50';
       const response = await fetch(listUrl, { headers: { 'X-Telegram-Init-Data': initData } });
       if (!response.ok) throw new Error('Не удалось загрузить историю проекта');
       const data = await response.json();
-      const latest = data.conversations?.[0];
-      if (!latest || typeof latest.id !== 'number') return;
-      const historyResponse = await fetch(base + '/api/conversations/' + latest.id + '/messages?limit=100', {
-        headers: { 'X-Telegram-Init-Data': initData },
-      });
-      if (!historyResponse.ok) throw new Error('Не удалось загрузить сообщения');
-      const history = await historyResponse.json();
-      setConversationId(latest.id);
-      setMessages((history.messages || []).map((item: { role: string; content: string }) => ({
-        role: (item.role === 'user' ? 'user' : 'assistant') as Message['role'],
-        text: item.content,
-      })));
+      const items: Conversation[] = data.conversations || [];
+      setConversations(items);
+      if (items.length) await loadConversation(items[0]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Ошибка загрузки контекста');
     }
+  }
+
+  async function createConversation() {
+    if (conversationBusy) return;
+    setConversationBusy(true);
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    try {
+      const response = await fetch(base + '/api/conversations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
+        body: JSON.stringify({ title: 'Новый диалог', ...(activeProjectId !== null ? { project_id: activeProjectId } : {}) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Не удалось создать диалог');
+      const created: Conversation = data.conversation;
+      setConversations(prev => [created, ...prev.filter(item => item.id !== created.id)]);
+      setConversationId(created.id); setMessages([]); setTab('studio'); setNotice('Новый диалог создан');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка создания диалога');
+    } finally { setConversationBusy(false); }
+  }
+
+  async function saveProjectEdit(projectId: number) {
+    if (!editProjectTitle.trim() || workspaceBusy) return;
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    setWorkspaceBusy(true);
+    try {
+      const response = await fetch(base + '/api/projects/' + projectId, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
+        body: JSON.stringify({ title: editProjectTitle, description: editProjectDescription }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Не удалось изменить проект');
+      setEditingProjectId(null); setNotice('Проект обновлён'); await loadProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка редактирования проекта');
+    } finally { setWorkspaceBusy(false); }
+  }
+
+  async function deleteProject(project: Project) {
+    if (workspaceBusy || !window.confirm('Удалить проект «' + project.title + '»? Для удаления в нём не должно быть диалогов.')) return;
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    setWorkspaceBusy(true);
+    try {
+      const response = await fetch(base + '/api/projects/' + project.id, { method: 'DELETE', headers: { 'X-Telegram-Init-Data': initData } });
+      if (!response.ok) { const data = await response.json(); throw new Error(data.detail || 'Не удалось удалить проект'); }
+      if (activeProjectId === project.id) { setActiveProjectId(null); setConversationId(null); setConversations([]); setMessages([]); }
+      setNotice('Проект удалён'); await loadProjects();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка удаления проекта');
+    } finally { setWorkspaceBusy(false); }
   }
 
   async function loadProjects() {
@@ -154,18 +217,9 @@ export default function App() {
         headers: { 'X-Telegram-Init-Data': initData },
       }).then(r => r.ok ? r.json() : Promise.reject(new Error('History unavailable')))
         .then(async data => {
-          const latest = data.conversations?.[0];
-          if (!latest || typeof latest.id !== 'number') return;
-          const historyResponse = await fetch(base + '/api/conversations/' + latest.id + '/messages?limit=100', {
-            headers: { 'X-Telegram-Init-Data': initData },
-          });
-          if (!historyResponse.ok) return;
-          const history = await historyResponse.json();
-          setConversationId(latest.id);
-          setMessages((history.messages || []).map((item: { role: string; content: string }) => ({
-            role: (item.role === 'user' ? 'user' : 'assistant') as Message['role'],
-            text: item.content,
-          })));
+          const items: Conversation[] = data.conversations || [];
+          setConversations(items);
+          if (items.length) await loadConversation(items[0]);
         }).catch(() => undefined);
     }
   }, []);
@@ -197,7 +251,10 @@ export default function App() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
-      if (typeof data.conversation_id === 'number') setConversationId(data.conversation_id);
+      if (typeof data.conversation_id === 'number') {
+        setConversationId(data.conversation_id);
+        setConversations(prev => [{ id: data.conversation_id, project_id: data.project_id ?? null, title: clean.slice(0, 80), created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, ...prev.filter(item => item.id !== data.conversation_id)]);
+      }
       setMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Не удалось выполнить запрос';
@@ -250,6 +307,8 @@ export default function App() {
               {projects.map(project => <option key={project.id} value={project.id}>{project.title}</option>)}
             </select>
           </label>
+          <div className="conversation-toolbar"><strong>Диалоги {activeProjectId !== null ? 'проекта' : 'общие'}</strong><button className="new-conversation-button" onClick={() => void createConversation()} disabled={conversationBusy}><Plus size={15} /> Новый диалог</button></div>
+          {conversations.length > 0 && <div className="conversation-list">{conversations.map(item => <button key={item.id} className={conversationId === item.id ? 'conversation-row selected' : 'conversation-row'} onClick={() => { void loadConversation(item).catch(error => setNotice(error instanceof Error ? error.message : 'Ошибка загрузки')); }}><MessageSquareText size={15} /><span>{item.title || 'Новый диалог'}</span>{conversationId === item.id && <Check size={14} />}</button>)}</div>}
           <div className="chat-window">{messages.length === 0 ? <div className="empty-chat"><div className="empty-orb"><Bot size={27} /></div><h3>Что создаём сегодня?</h3><p>Опиши задачу или выбери готовый сценарий.</p>{prompts.map(p => <button className="suggestion" key={p} onClick={() => sendMessage(p)}>{p}<ArrowUpRight size={15} /></button>)}</div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><div className="message-role">{m.role === 'user' ? 'ТЫ' : 'BIZORA AI'}</div><div>{m.text}</div></div>)}{busy && <div className="message assistant"><div className="message-role">BIZORA AI</div><div className="typing"><i /><i /><i /></div></div>}</div>
           <form className="composer" onSubmit={e => { e.preventDefault(); void sendMessage(); }}><textarea value={query} onChange={e => setQuery(e.target.value)} placeholder="Напиши, что нужно сделать..." rows={2} /><div className="composer-bottom"><span><LockKeyhole size={12} /> Приватный рабочий контекст</span><button className="send-button" type="submit" disabled={!query.trim() || busy} aria-label="Отправить"><Send size={17} /></button></div></form>
           <p className="small-note">Пока работает демонстрационный режим. Подключение реальной AI-модели — следующий этап.</p>
@@ -266,7 +325,9 @@ export default function App() {
           </form>
           {workspaces.length === 0 ? <div className="empty-projects"><div className="empty-orb"><FolderKanban size={25} /></div><h3>Пока нет пространств</h3><p>Создай первое пространство — оно будет сохранено в базе данных и доступно только твоему Telegram-аккаунту.</p></div> : <div className="workspace-list">{workspaces.map(workspace => <section className={activeWorkspaceId === workspace.id ? 'workspace-card selected' : 'workspace-card'} key={workspace.id}>
             <button className="workspace-heading" onClick={() => setActiveWorkspaceId(workspace.id)}><div className="tool-icon violet"><BriefcaseBusiness size={18} /></div><div className="wide-tool-copy"><strong>{workspace.name}</strong><span>{workspace.description || 'Рабочее пространство'} · {projects.filter(project => project.workspace_id === workspace.id).length} проектов</span></div><ChevronRight size={17} /></button>
-            {activeWorkspaceId === workspace.id && <><form className="project-form" onSubmit={createProject}><input value={newProjectTitle} onChange={e => setNewProjectTitle(e.target.value)} placeholder="Название нового проекта" maxLength={160} required /><button type="submit" disabled={workspaceBusy || !newProjectTitle.trim()} aria-label="Создать проект"><Plus size={17} /></button></form><div className="project-list">{projects.filter(project => project.workspace_id === workspace.id).map(project => <button className={activeProjectId === project.id ? 'project-row active-project-row' : 'project-row'} key={project.id} onClick={() => { void selectProject(project.id); setTab('studio'); }}><div className="project-mark"><FolderKanban size={16} /></div><div className="wide-tool-copy"><strong>{project.title}</strong><span>{project.description || 'Проект бизнеса'} · {project.status === 'active' ? 'Активный' : project.status}</span></div><span className="project-status" /></button>)}</div></>}
+            {activeWorkspaceId === workspace.id && <><form className="project-form" onSubmit={createProject}><input value={newProjectTitle} onChange={e => setNewProjectTitle(e.target.value)} placeholder="Название нового проекта" maxLength={160} required /><button type="submit" disabled={workspaceBusy || !newProjectTitle.trim()} aria-label="Создать проект"><Plus size={17} /></button></form><div className="project-list">{projects.filter(project => project.workspace_id === workspace.id).map(project => <div className="project-management-row" key={project.id}>
+            {editingProjectId === project.id ? <form className="project-edit-form" onSubmit={e => { e.preventDefault(); void saveProjectEdit(project.id); }}><input value={editProjectTitle} onChange={e => setEditProjectTitle(e.target.value)} maxLength={160} required aria-label="Название проекта" /><input value={editProjectDescription} onChange={e => setEditProjectDescription(e.target.value)} maxLength={4000} placeholder="Описание" aria-label="Описание проекта" /><div><button type="submit" disabled={workspaceBusy || !editProjectTitle.trim()}><Check size={15} /> Сохранить</button><button type="button" onClick={() => setEditingProjectId(null)}>Отмена</button></div></form> : <><button className={activeProjectId === project.id ? 'project-row active-project-row' : 'project-row'} onClick={() => { void selectProject(project.id); setTab('studio'); }}><div className="project-mark"><FolderKanban size={16} /></div><div className="wide-tool-copy"><strong>{project.title}</strong><span>{project.description || 'Проект бизнеса'} · {project.status === 'active' ? 'Активный' : project.status}</span></div><span className="project-status" /></button><div className="project-actions"><button aria-label={'Редактировать ' + project.title} onClick={() => { setEditingProjectId(project.id); setEditProjectTitle(project.title); setEditProjectDescription(project.description); }}><Pencil size={14} /></button><button aria-label={'Удалить ' + project.title} onClick={() => void deleteProject(project)}><Trash2 size={14} /></button></div></>}
+          </div>)}</div></>}
           </section>)}</div>}
         </section>}
 
