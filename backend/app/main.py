@@ -1,33 +1,26 @@
 import hashlib
 import hmac
 import json
-import threading
 import time
 from urllib.parse import parse_qsl
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.database import (
+    ConversationRecord, MessageRecord, UserRecord, check_and_record_usage,
+    ensure_user, get_db, initialize_database,
+)
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    app_env: str = "development"
-    telegram_bot_token: str = ""
-    owner_telegram_ids: str = ""
-    ai_provider_api_key: str = ""
-    ai_provider_base_url: str = "https://api.openai.com/v1/chat/completions"
-    ai_model: str = "gpt-4o-mini"
-    user_hourly_ai_limit: int = 20
-    owner_hourly_ai_limit: int = 200
-    frontend_origins: str = "http://localhost:5173"
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-
-settings = Settings()
-app = FastAPI(title="BIZORA AI API", version="0.3.0")
+app = FastAPI(title="BIZORA AI API", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.frontend_origins.split(",") if origin.strip()],
@@ -39,10 +32,7 @@ app.add_middleware(
 
 class DemoChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
-
-
-_ai_request_times: dict[int, list[float]] = {}
-_ai_request_lock = threading.Lock()
+    conversation_id: int | None = Field(default=None, gt=0)
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400) -> dict:
@@ -123,23 +113,6 @@ def require_owner(user: dict = Depends(get_current_telegram_user)) -> dict:
     return user
 
 
-def enforce_ai_rate_limit(user: dict) -> None:
-    """Basic in-memory hourly guardrail; use shared persistent storage in production."""
-    now = time.time()
-    limit = settings.owner_hourly_ai_limit if user["role"] == "owner" else settings.user_hourly_ai_limit
-    with _ai_request_lock:
-        for user_id, timestamps in list(_ai_request_times.items()):
-            recent = [stamp for stamp in timestamps if now - stamp < 3600]
-            if recent:
-                _ai_request_times[user_id] = recent
-            else:
-                _ai_request_times.pop(user_id, None)
-        recent = _ai_request_times.setdefault(user["id"], [])
-        if len(recent) >= max(1, limit):
-            raise HTTPException(status_code=429, detail="Hourly AI request limit reached. Try again later.")
-        recent.append(now)
-
-
 def request_ai_reply(message: str) -> str:
     """Call an OpenAI-compatible chat-completions endpoint without exposing provider errors."""
     try:
@@ -184,7 +157,7 @@ def request_ai_reply(message: str) -> str:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "bizora-ai-api", "version": "0.3.0"}
+    return {"status": "ok", "service": "bizora-ai-api", "version": "0.4.0"}
 
 
 @app.get("/api/config")
@@ -194,11 +167,19 @@ def public_config():
         "environment": settings.app_env,
         "ai_configured": bool(settings.ai_provider_api_key),
         "telegram_auth_configured": bool(settings.telegram_bot_token),
+        "history_enabled": True,
     }
 
 
+@app.on_event("startup")
+def startup():
+    initialize_database()
+
+
 @app.post("/api/auth/telegram")
-def telegram_auth(user: dict = Depends(get_current_telegram_user)):
+def telegram_auth(user: dict = Depends(get_current_telegram_user), db: Session = Depends(get_db)):
+    ensure_user(db, user)
+    db.commit()
     return {
         "authenticated": True,
         "user": {
@@ -213,7 +194,9 @@ def telegram_auth(user: dict = Depends(get_current_telegram_user)):
 
 
 @app.get("/api/me")
-def current_user(user: dict = Depends(get_current_telegram_user)):
+def current_user(user: dict = Depends(get_current_telegram_user), db: Session = Depends(get_db)):
+    ensure_user(db, user)
+    db.commit()
     return {"authenticated": True, "user": user}
 
 
@@ -222,21 +205,90 @@ def owner_dashboard(user: dict = Depends(require_owner)):
     return {"authorized": True, "role": "owner", "user_id": user["id"]}
 
 
-@app.post("/api/chat/demo")
-def demo_chat(request: DemoChatRequest, user: dict = Depends(get_current_telegram_user)):
-    if not request.message.strip():
-        raise HTTPException(status_code=422, detail="Message cannot be empty")
-    if not settings.ai_provider_api_key:
-        return {
-            "mode": "demo",
-            "reply": (
-                "BIZORA AI принял задачу. Сейчас включён демонстрационный режим — "
-                "AI-провайдер ещё не подключён, поэтому я не буду выдавать шаблонный текст "
-                "за результат настоящей нейросети. Добавь ключ провайдера в переменные окружения "
-                "backend, чтобы включить настоящие ответы AI."
-            ),
-        }
+def _conversation_for_user(db: Session, conversation_id: int, user_id: int) -> ConversationRecord:
+    conversation = db.scalar(select(ConversationRecord).where(
+        ConversationRecord.id == conversation_id,
+        ConversationRecord.telegram_id == user_id,
+    ))
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
 
-    enforce_ai_rate_limit(user)
-    reply = request_ai_reply(request.message.strip())
-    return {"mode": "ai", "reply": reply, "model": settings.ai_model}
+
+@app.get("/api/conversations")
+def list_conversations(
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    ensure_user(db, user)
+    rows = db.scalars(select(ConversationRecord)
+        .where(ConversationRecord.telegram_id == user["id"])
+        .order_by(ConversationRecord.updated_at.desc(), ConversationRecord.id.desc())
+        .limit(limit)).all()
+    db.commit()
+    return {"conversations": [
+        {"id": row.id, "title": row.title, "created_at": row.created_at.isoformat(),
+         "updated_at": row.updated_at.isoformat()} for row in rows
+    ]}
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+def list_messages(
+    conversation_id: int,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=200),
+):
+    conversation = _conversation_for_user(db, conversation_id, user["id"])
+    rows = db.scalars(select(MessageRecord)
+        .where(MessageRecord.conversation_id == conversation.id)
+        .order_by(MessageRecord.id.asc()).limit(limit)).all()
+    return {"conversation_id": conversation.id, "messages": [
+        {"id": row.id, "role": row.role, "content": row.content, "created_at": row.created_at.isoformat()}
+        for row in rows
+    ]}
+
+
+@app.post("/api/chat/demo")
+def demo_chat(
+    request: DemoChatRequest,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    ensure_user(db, user)
+    if request.conversation_id is None:
+        conversation = ConversationRecord(telegram_id=user["id"], title=message[:80] or "Новый диалог")
+        db.add(conversation)
+        db.flush()
+    else:
+        conversation = _conversation_for_user(db, request.conversation_id, user["id"])
+    db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
+    conversation.updated_at = datetime.now(timezone.utc)
+
+    if not settings.ai_provider_api_key:
+        reply = (
+            "BIZORA AI принял задачу. Сейчас включён демонстрационный режим — "
+            "AI-провайдер ещё не подключён, поэтому я не буду выдавать шаблонный текст "
+            "за результат настоящей нейросети. Добавь ключ провайдера в переменные окружения "
+            "backend, чтобы включить настоящие ответы AI."
+        )
+        db.add(MessageRecord(conversation_id=conversation.id, role="assistant", content=reply))
+        db.commit()
+        return {"mode": "demo", "reply": reply, "conversation_id": conversation.id}
+
+    limit = settings.owner_hourly_ai_limit if user["role"] == "owner" else settings.user_hourly_ai_limit
+    try:
+        check_and_record_usage(db, user, limit)
+        db.commit()
+        reply = request_ai_reply(message)
+    except HTTPException:
+        db.rollback()
+        raise
+    db.add(MessageRecord(conversation_id=conversation.id, role="assistant", content=reply))
+    conversation.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"mode": "ai", "reply": reply, "model": settings.ai_model, "conversation_id": conversation.id}

@@ -32,6 +32,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('home');
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [conversationId, setConversationId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
@@ -66,10 +67,11 @@ export default function App() {
           'Content-Type': 'application/json',
           'X-Telegram-Init-Data': initData,
         },
-        body: JSON.stringify({ message: clean }),
+        body: JSON.stringify({ message: clean, ...(conversationId ? { conversation_id: conversationId } : {}) }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
+      if (typeof data.conversation_id === 'number') setConversationId(data.conversation_id);
       setMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Не удалось выполнить запрос';

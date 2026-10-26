@@ -9,9 +9,22 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.main import app, settings, verify_telegram_init_data
+from app.database import ConversationRecord, MessageRecord, SessionLocal, UsageEvent, UserRecord, initialize_database
 
 client = TestClient(app)
+initialize_database()
 TEST_TOKEN = "test-bot-token"
+
+
+@pytest.fixture(autouse=True)
+def clear_test_database():
+    initialize_database()
+    with SessionLocal() as db:
+        db.query(UsageEvent).delete()
+        db.query(MessageRecord).delete()
+        db.query(ConversationRecord).delete()
+        db.query(UserRecord).delete()
+        db.commit()
 
 
 def make_init_data(user_id: int = 123456, auth_date: int | None = None, token: str = TEST_TOKEN) -> str:
@@ -163,7 +176,6 @@ def test_ai_provider_returns_real_reply_and_uses_server_key(monkeypatch):
     monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
     monkeypatch.setattr(settings, "ai_provider_api_key", "server-side-test-key")
     monkeypatch.setattr(settings, "ai_model", "test-model")
-    main_module._ai_request_times.clear()
 
     class FakeResponse:
         status_code = 200
@@ -240,3 +252,32 @@ def test_ai_provider_failure_is_reported_without_leaking_details(monkeypatch):
     )
     assert response.status_code == 502
     assert "private provider detail" not in response.text
+
+
+def test_chat_persists_conversation_and_messages(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "")
+    headers = {"X-Telegram-Init-Data": make_init_data(616161)}
+    first = client.post("/api/chat/demo", json={"message": "First task"}, headers=headers)
+    assert first.status_code == 200
+    conversation_id = first.json()["conversation_id"]
+    second = client.post("/api/chat/demo", json={"message": "Follow-up task", "conversation_id": conversation_id}, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["conversation_id"] == conversation_id
+    listing = client.get("/api/conversations", headers=headers)
+    assert listing.status_code == 200
+    assert len(listing.json()["conversations"]) == 1
+    history = client.get(f"/api/conversations/{conversation_id}/messages", headers=headers)
+    assert history.status_code == 200
+    assert [item["role"] for item in history.json()["messages"]] == ["user", "assistant", "user", "assistant"]
+
+
+def test_user_cannot_read_another_users_conversation(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "")
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(717171)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(818181)}
+    created = client.post("/api/chat/demo", json={"message": "Private conversation"}, headers=owner_headers)
+    conversation_id = created.json()["conversation_id"]
+    response = client.get(f"/api/conversations/{conversation_id}/messages", headers=other_headers)
+    assert response.status_code == 404
