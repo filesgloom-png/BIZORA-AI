@@ -4,7 +4,7 @@ import json
 import time
 from urllib.parse import parse_qsl
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -75,6 +75,44 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: i
     return {"user": user, "auth_date": auth_date}
 
 
+def get_current_telegram_user(
+    x_telegram_init_data: str = Header(default="", alias="X-Telegram-Init-Data"),
+) -> dict:
+    """Reusable dependency for endpoints that require a verified Telegram user."""
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=503, detail="Telegram authentication is not configured")
+    try:
+        verified = verify_telegram_init_data(x_telegram_init_data, settings.telegram_bot_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired Telegram initData") from exc
+
+    user = verified["user"]
+    try:
+        owner_ids = {
+            int(value.strip())
+            for value in settings.owner_telegram_ids.split(",")
+            if value.strip()
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Owner configuration is invalid") from exc
+
+    return {
+        "id": int(user["id"]),
+        "first_name": user.get("first_name", ""),
+        "username": user.get("username"),
+        "language_code": user.get("language_code"),
+        "auth_date": verified["auth_date"],
+        "role": "owner" if int(user["id"]) in owner_ids else "user",
+    }
+
+
+def require_owner(user: dict = Depends(get_current_telegram_user)) -> dict:
+    """Reusable dependency that restricts an endpoint to configured owner IDs."""
+    if user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    return user
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "bizora-ai-api", "version": "0.2.0"}
@@ -91,35 +129,28 @@ def public_config():
 
 
 @app.post("/api/auth/telegram")
-def telegram_auth(x_telegram_init_data: str = Header(default="", alias="X-Telegram-Init-Data")):
-    if not settings.telegram_bot_token:
-        raise HTTPException(status_code=503, detail="Telegram authentication is not configured")
-    try:
-        verified = verify_telegram_init_data(x_telegram_init_data, settings.telegram_bot_token)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid or expired Telegram initData") from exc
-
-    user = verified["user"]
-    try:
-        owner_ids = {
-            int(value.strip())
-            for value in settings.owner_telegram_ids.split(",")
-            if value.strip()
-        }
-    except ValueError:
-        raise HTTPException(status_code=500, detail="Owner configuration is invalid")
-
+def telegram_auth(user: dict = Depends(get_current_telegram_user)):
     return {
         "authenticated": True,
         "user": {
-            "id": int(user["id"]),
-            "first_name": user.get("first_name", ""),
-            "username": user.get("username"),
-            "language_code": user.get("language_code"),
+            "id": user["id"],
+            "first_name": user["first_name"],
+            "username": user["username"],
+            "language_code": user["language_code"],
         },
-        "role": "owner" if int(user["id"]) in owner_ids else "user",
-        "auth_date": verified["auth_date"],
+        "role": user["role"],
+        "auth_date": user["auth_date"],
     }
+
+
+@app.get("/api/me")
+def current_user(user: dict = Depends(get_current_telegram_user)):
+    return {"authenticated": True, "user": user}
+
+
+@app.get("/api/owner")
+def owner_dashboard(user: dict = Depends(require_owner)):
+    return {"authorized": True, "role": "owner", "user_id": user["id"]}
 
 
 @app.post("/api/chat/demo")
