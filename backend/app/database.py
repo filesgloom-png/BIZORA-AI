@@ -52,7 +52,6 @@ class ConversationRecord(Base):
 
 class MessageRecord(Base):
     __tablename__ = "messages"
-    __table_args__ = (Index("ix_messages_conversation_id", "conversation_id", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
     role: Mapped[str] = mapped_column(String(16))
