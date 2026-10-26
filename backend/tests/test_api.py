@@ -671,3 +671,29 @@ def test_chat_endpoint_returns_user_facing_provider_timeout(monkeypatch):
     assert response.status_code == 504
     assert response.json()["detail"] == "AI provider timed out. Please try again."
     assert "private provider detail" not in response.text
+
+
+def test_failed_ai_request_does_not_persist_partial_message_history(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+
+    def fail_provider(*args, **kwargs):
+        raise httpx.TimeoutException("private provider detail")
+
+    monkeypatch.setattr(main_module.httpx, "post", fail_provider)
+    headers = {"X-Telegram-Init-Data": make_init_data(7654322)}
+    failed = client.post(
+        "/api/chat/demo", json={"message": "This must not be saved"},
+        headers=headers,
+    )
+    assert failed.status_code == 504
+
+    conversations = client.get("/api/conversations", headers=headers)
+    assert conversations.status_code == 200
+    if conversations.json()["conversations"]:
+        conversation_id = conversations.json()["conversations"][0]["id"]
+        history = client.get(
+            f"/api/conversations/{conversation_id}/messages", headers=headers,
+        )
+        assert history.status_code == 200
+        assert history.json()["messages"] == []

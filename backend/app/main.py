@@ -525,10 +525,6 @@ def demo_chat(
             raise HTTPException(status_code=404, detail="Conversation not found in this project")
     if conversation.title == "Новый диалог":
         conversation.title = message[:80]
-    db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
-    db.flush()
-    conversation.updated_at = datetime.now(timezone.utc)
-
     if not settings.ai_provider_api_key:
         reply = (
             "BIZORA AI принял задачу. Сейчас включён демонстрационный режим — "
@@ -536,12 +532,16 @@ def demo_chat(
             "за результат настоящей нейросети. Добавь ключ провайдера в переменные окружения "
             "backend, чтобы включить настоящие ответы AI."
         )
+        db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
         db.add(MessageRecord(conversation_id=conversation.id, role="assistant", content=reply))
+        conversation.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {"mode": "demo", "reply": reply, "conversation_id": conversation.id, "project_id": conversation.project_id}
 
     limit = settings.owner_hourly_ai_limit if user["role"] == "owner" else settings.user_hourly_ai_limit
     try:
+        # Commit quota usage before the network call, but do not persist the user's
+        # message until the provider succeeds. Failed AI calls must not leave half-turns.
         check_and_record_usage(db, user, limit)
         db.commit()
         recent_rows = db.scalars(
@@ -555,10 +555,12 @@ def demo_chat(
             for row in reversed(recent_rows)
             if row.role in {"user", "assistant"}
         ]
+        history.append({"role": "user", "content": message})
         reply = request_ai_reply(message, history=history)
     except HTTPException:
         db.rollback()
         raise
+    db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
     db.add(MessageRecord(conversation_id=conversation.id, role="assistant", content=reply))
     conversation.updated_at = datetime.now(timezone.utc)
     db.commit()
