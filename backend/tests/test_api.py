@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 import app.main as main_module
@@ -595,3 +596,78 @@ def test_conversation_cannot_be_renamed_or_deleted_by_another_project_owner(monk
     assert client.patch(f"/api/conversations/{conversation['id']}", json={"title": "Hijacked"}, headers=other_headers).status_code == 404
     assert client.delete(f"/api/conversations/{conversation['id']}", headers=other_headers).status_code == 404
     assert client.get(f"/api/projects/{project['id']}/conversations", headers=owner_headers).json()["conversations"][0]["id"] == conversation["id"]
+
+
+def test_ai_provider_timeout_returns_retryable_error(monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+
+    def timeout(*args, **kwargs):
+        raise httpx.TimeoutException("private provider detail")
+
+    monkeypatch.setattr(main_module.httpx, "post", timeout)
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module.request_ai_reply("hello")
+    assert exc.value.status_code == 504
+    assert exc.value.detail == "AI provider timed out. Please try again."
+
+
+def test_ai_provider_rate_limit_returns_busy_message(monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+    monkeypatch.setattr(main_module.httpx, "post", lambda *args, **kwargs: type("Response", (), {"status_code": 429})())
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module.request_ai_reply("hello")
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "AI provider is temporarily busy. Try again later."
+
+
+def test_ai_provider_invalid_json_returns_safe_error(monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+    response = httpx.Response(200, content=b"{not-json", request=httpx.Request("POST", "https://provider.test"))
+    monkeypatch.setattr(main_module.httpx, "post", lambda *args, **kwargs: response)
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module.request_ai_reply("hello")
+    assert exc.value.status_code == 502
+    assert exc.value.detail == "AI provider request failed. Please try again later."
+
+
+def test_ai_provider_empty_content_returns_safe_error(monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+    response = httpx.Response(
+        200, json={"choices": [{"message": {"content": "  "}}]},
+        request=httpx.Request("POST", "https://provider.test"),
+    )
+    monkeypatch.setattr(main_module.httpx, "post", lambda *args, **kwargs: response)
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module.request_ai_reply("hello")
+    assert exc.value.status_code == 502
+    assert exc.value.detail == "AI provider request failed. Please try again later."
+
+
+def test_ai_provider_http_error_returns_safe_error(monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+    response = httpx.Response(
+        500, json={"error": {"message": "private provider detail"}},
+        request=httpx.Request("POST", "https://provider.test"),
+    )
+    monkeypatch.setattr(main_module.httpx, "post", lambda *args, **kwargs: response)
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module.request_ai_reply("hello")
+    assert exc.value.status_code == 502
+    assert exc.value.detail == "AI provider request failed. Please try again later."
+
+
+def test_chat_endpoint_returns_user_facing_provider_timeout(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "test-provider-key")
+
+    def timeout(*args, **kwargs):
+        raise httpx.TimeoutException("private provider detail")
+
+    monkeypatch.setattr(main_module.httpx, "post", timeout)
+    response = client.post(
+        "/api/chat/demo", json={"message": "Test timeout"},
+        headers={"X-Telegram-Init-Data": make_init_data(7654321)},
+    )
+    assert response.status_code == 504
+    assert response.json()["detail"] == "AI provider timed out. Please try again."
+    assert "private provider detail" not in response.text
