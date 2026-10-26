@@ -100,3 +100,42 @@ def test_telegram_auth_requires_bot_token(monkeypatch):
         headers={"X-Telegram-Init-Data": make_init_data()},
     )
     assert response.status_code == 503
+
+
+def test_protected_me_rejects_missing_init_data(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    response = client.get("/api/me")
+    assert response.status_code == 401
+
+
+def test_protected_me_accepts_verified_user(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "owner_telegram_ids", "987654")
+    response = client.get(
+        "/api/me",
+        headers={"X-Telegram-Init-Data": make_init_data(123456)},
+    )
+    assert response.status_code == 200
+    assert response.json()["user"]["role"] == "user"
+
+
+def test_owner_endpoint_rejects_regular_user(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "owner_telegram_ids", "987654")
+    response = client.get(
+        "/api/owner",
+        headers={"X-Telegram-Init-Data": make_init_data(123456)},
+    )
+    assert response.status_code == 403
+
+
+def test_owner_endpoint_accepts_configured_owner(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "owner_telegram_ids", "123456,987654")
+    response = client.get(
+        "/api/owner",
+        headers={"X-Telegram-Init-Data": make_init_data(123456)},
+    )
+    assert response.status_code == 200
+    assert response.json()["authorized"] is True
+    assert response.json()["user_id"] == 123456
