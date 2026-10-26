@@ -33,6 +33,7 @@ app.add_middleware(
 class DemoChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: int | None = Field(default=None, gt=0)
+    project_id: int | None = Field(default=None, gt=0)
 
 
 class WorkspaceCreate(BaseModel):
@@ -341,6 +342,37 @@ def _conversation_for_user(db: Session, conversation_id: int, user_id: int) -> C
     return conversation
 
 
+def _project_for_user(db: Session, project_id: int, user_id: int) -> ProjectRecord:
+    project = db.scalar(select(ProjectRecord).where(
+        ProjectRecord.id == project_id,
+        ProjectRecord.owner_telegram_id == user_id,
+    ))
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@app.get("/api/projects/{project_id}/conversations")
+def list_project_conversations(
+    project_id: int,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    _project_for_user(db, project_id, user["id"])
+    rows = db.scalars(
+        select(ConversationRecord)
+        .where(ConversationRecord.project_id == project_id, ConversationRecord.telegram_id == user["id"])
+        .order_by(ConversationRecord.updated_at.desc(), ConversationRecord.id.desc())
+        .limit(limit)
+    ).all()
+    return {"conversations": [
+        {"id": row.id, "project_id": row.project_id, "title": row.title,
+         "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
+        for row in rows
+    ]}
+
+
 @app.get("/api/conversations")
 def list_conversations(
     user: dict = Depends(get_current_telegram_user),
@@ -354,8 +386,8 @@ def list_conversations(
         .limit(limit)).all()
     db.commit()
     return {"conversations": [
-        {"id": row.id, "title": row.title, "created_at": row.created_at.isoformat(),
-         "updated_at": row.updated_at.isoformat()} for row in rows
+        {"id": row.id, "project_id": row.project_id, "title": row.title,
+         "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()} for row in rows
     ]}
 
 
@@ -386,12 +418,19 @@ def demo_chat(
     if not message:
         raise HTTPException(status_code=422, detail="Message cannot be empty")
     ensure_user(db, user)
+    if request.project_id is not None:
+        _project_for_user(db, request.project_id, user["id"])
     if request.conversation_id is None:
-        conversation = ConversationRecord(telegram_id=user["id"], title=message[:80] or "Новый диалог")
+        conversation = ConversationRecord(
+            telegram_id=user["id"], title=message[:80] or "Новый диалог",
+            project_id=request.project_id,
+        )
         db.add(conversation)
         db.flush()
     else:
         conversation = _conversation_for_user(db, request.conversation_id, user["id"])
+        if request.project_id is not None and conversation.project_id != request.project_id:
+            raise HTTPException(status_code=404, detail="Conversation not found in this project")
     db.add(MessageRecord(conversation_id=conversation.id, role="user", content=message))
     db.flush()
     conversation.updated_at = datetime.now(timezone.utc)
@@ -405,7 +444,7 @@ def demo_chat(
         )
         db.add(MessageRecord(conversation_id=conversation.id, role="assistant", content=reply))
         db.commit()
-        return {"mode": "demo", "reply": reply, "conversation_id": conversation.id}
+        return {"mode": "demo", "reply": reply, "conversation_id": conversation.id, "project_id": conversation.project_id}
 
     limit = settings.owner_hourly_ai_limit if user["role"] == "owner" else settings.user_hourly_ai_limit
     try:
@@ -429,4 +468,4 @@ def demo_chat(
     db.add(MessageRecord(conversation_id=conversation.id, role="assistant", content=reply))
     conversation.updated_at = datetime.now(timezone.utc)
     db.commit()
-    return {"mode": "ai", "reply": reply, "model": settings.ai_model, "conversation_id": conversation.id}
+    return {"mode": "ai", "reply": reply, "model": settings.ai_model, "conversation_id": conversation.id, "project_id": conversation.project_id}

@@ -24,10 +24,14 @@ def clear_test_database():
     initialize_database()
     with SessionLocal() as db:
         db.query(UsageEvent).delete()
+        db.query(MessageRecord).delete()
+        db.query(ConversationRecord).delete()
         db.query(ProjectRecord).delete()
         db.query(WorkspaceRecord).delete()
         db.query(MessageRecord).delete()
         db.query(ConversationRecord).delete()
+        db.query(ProjectRecord).delete()
+        db.query(WorkspaceRecord).delete()
         db.query(UserRecord).delete()
         db.commit()
 
@@ -419,3 +423,74 @@ def test_workspace_and_project_crud_is_persisted_and_owner_scoped(monkeypatch):
         headers=other_headers,
     )
     assert cannot_create.status_code == 404
+
+
+def test_project_chat_context_is_persisted_and_owner_scoped(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "")
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(454545)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(565656)}
+
+    workspace_response = client.post(
+        "/api/workspaces", json={"name": "Product"}, headers=owner_headers
+    )
+    workspace_id = workspace_response.json()["workspace"]["id"]
+    project_response = client.post(
+        f"/api/workspaces/{workspace_id}/projects",
+        json={"title": "Launch plan"}, headers=owner_headers,
+    )
+    project_id = project_response.json()["project"]["id"]
+
+    chat = client.post(
+        "/api/chat/demo",
+        json={"message": "Keep this launch context", "project_id": project_id},
+        headers=owner_headers,
+    )
+    assert chat.status_code == 200
+    conversation_id = chat.json()["conversation_id"]
+    assert chat.json()["project_id"] == project_id
+
+    project_conversations = client.get(
+        f"/api/projects/{project_id}/conversations", headers=owner_headers
+    )
+    assert project_conversations.status_code == 200
+    assert [item["id"] for item in project_conversations.json()["conversations"]] == [conversation_id]
+    assert project_conversations.json()["conversations"][0]["project_id"] == project_id
+
+    messages = client.get(
+        f"/api/conversations/{conversation_id}/messages", headers=owner_headers
+    )
+    assert messages.status_code == 200
+    assert messages.json()["messages"][0]["content"] == "Keep this launch context"
+
+    # A different account cannot list or attach conversations to this project.
+    assert client.get(
+        f"/api/projects/{project_id}/conversations", headers=other_headers
+    ).status_code == 404
+    assert client.post(
+        "/api/chat/demo",
+        json={"message": "Attempt to use someone else's project", "project_id": project_id},
+        headers=other_headers,
+    ).status_code == 404
+
+    # A conversation cannot be reused under a different project context.
+    second_project = client.post(
+        f"/api/workspaces/{workspace_id}/projects",
+        json={"title": "Separate launch"}, headers=owner_headers,
+    ).json()["project"]
+    mismatch = client.post(
+        "/api/chat/demo",
+        json={"message": "Mix contexts", "conversation_id": conversation_id, "project_id": second_project["id"]},
+        headers=owner_headers,
+    )
+    assert mismatch.status_code == 404
+
+    # Unscoped history remains separate from project-specific history.
+    global_chat = client.post(
+        "/api/chat/demo", json={"message": "General question"}, headers=owner_headers
+    )
+    assert global_chat.status_code == 200
+    assert global_chat.json()["project_id"] is None
+    assert [item["id"] for item in client.get(
+        f"/api/projects/{project_id}/conversations", headers=owner_headers
+    ).json()["conversations"]] == [conversation_id]
