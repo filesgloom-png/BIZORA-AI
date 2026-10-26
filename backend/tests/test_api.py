@@ -537,3 +537,41 @@ def test_project_update_and_delete_are_owner_scoped_and_preserve_linked_history(
     deleted = client.delete(f"/api/projects/{empty_project['id']}", headers=owner_headers)
     assert deleted.status_code == 204
     assert all(item["id"] != empty_project["id"] for item in client.get("/api/projects", headers=owner_headers).json()["projects"])
+
+
+
+def test_conversation_rename_and_delete_are_owner_scoped_and_preserve_other_history(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    monkeypatch.setattr(settings, "ai_provider_api_key", "")
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(633633)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(744744)}
+    first = client.post("/api/chat/demo", json={"message": "Keep this history"}, headers=owner_headers)
+    second = client.post("/api/chat/demo", json={"message": "Delete this history"}, headers=owner_headers)
+    assert first.status_code == 200 and second.status_code == 200
+    first_id, second_id = first.json()["conversation_id"], second.json()["conversation_id"]
+    renamed = client.patch(f"/api/conversations/{first_id}", json={"title": "  Important notes  "}, headers=owner_headers)
+    assert renamed.status_code == 200
+    assert renamed.json()["conversation"]["title"] == "Important notes"
+    assert client.patch(f"/api/conversations/{first_id}", json={"title": "Stolen"}, headers=other_headers).status_code == 404
+    assert client.delete(f"/api/conversations/{first_id}", headers=other_headers).status_code == 404
+    assert client.get(f"/api/conversations/{first_id}/messages", headers=other_headers).status_code == 404
+    deleted = client.delete(f"/api/conversations/{second_id}", headers=owner_headers)
+    assert deleted.status_code == 204
+    assert client.get(f"/api/conversations/{second_id}/messages", headers=owner_headers).status_code == 404
+    remaining = client.get("/api/conversations?unassigned=true", headers=owner_headers).json()["conversations"]
+    assert [item["id"] for item in remaining] == [first_id]
+    history = client.get(f"/api/conversations/{first_id}/messages", headers=owner_headers)
+    assert history.status_code == 200
+    assert [item["content"] for item in history.json()["messages"] if item["role"] == "user"] == ["Keep this history"]
+
+
+def test_conversation_cannot_be_renamed_or_deleted_by_another_project_owner(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", TEST_TOKEN)
+    owner_headers = {"X-Telegram-Init-Data": make_init_data(855855)}
+    other_headers = {"X-Telegram-Init-Data": make_init_data(966966)}
+    workspace = client.post("/api/workspaces", json={"name": "Private"}, headers=owner_headers).json()["workspace"]
+    project = client.post(f"/api/workspaces/{workspace['id']}/projects", json={"title": "Private project"}, headers=owner_headers).json()["project"]
+    conversation = client.post("/api/conversations", json={"title": "Private dialog", "project_id": project["id"]}, headers=owner_headers).json()["conversation"]
+    assert client.patch(f"/api/conversations/{conversation['id']}", json={"title": "Hijacked"}, headers=other_headers).status_code == 404
+    assert client.delete(f"/api/conversations/{conversation['id']}", headers=other_headers).status_code == 404
+    assert client.get(f"/api/projects/{project['id']}/conversations", headers=owner_headers).json()["conversations"][0]["id"] == conversation["id"]

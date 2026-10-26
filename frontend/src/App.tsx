@@ -116,6 +116,54 @@ export default function App() {
     }
   }
 
+  async function renameConversation(conversation: Conversation) {
+    const title = window.prompt('Новое название диалога', conversation.title || 'Новый диалог');
+    if (title === null) return;
+    if (!title.trim()) { setNotice('Название диалога не может быть пустым'); return; }
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    try {
+      const response = await fetch(base + '/api/conversations/' + conversation.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': initData },
+        body: JSON.stringify({ title }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Не удалось переименовать диалог');
+      const updated: Conversation = data.conversation;
+      setConversations(prev => prev.map(item => item.id === updated.id ? updated : item));
+      setNotice('Диалог переименован');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка переименования диалога');
+    }
+  }
+
+  async function deleteConversation(conversation: Conversation) {
+    if (conversationBusy || !window.confirm('Удалить диалог «' + (conversation.title || 'Новый диалог') + '»? Все его сообщения будут удалены.')) return;
+    setConversationBusy(true);
+    const initData = window.Telegram?.WebApp?.initData || '';
+    const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+    try {
+      const response = await fetch(base + '/api/conversations/' + conversation.id, {
+        method: 'DELETE', headers: { 'X-Telegram-Init-Data': initData },
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || 'Не удалось удалить диалог');
+      }
+      const remaining = conversations.filter(item => item.id !== conversation.id);
+      setConversations(remaining);
+      if (conversationId === conversation.id) {
+        setConversationId(null); setMessages([]); persistContext(activeProjectId, null);
+        const next = remaining[0];
+        if (next) { await loadConversation(next); persistContext(activeProjectId, next.id); }
+      }
+      setNotice('Диалог удалён');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Ошибка удаления диалога');
+    } finally { setConversationBusy(false); }
+  }
+
   async function createConversation() {
     if (conversationBusy) return;
     setConversationBusy(true);
@@ -347,7 +395,7 @@ export default function App() {
             </select>
           </label>
           <div className="conversation-toolbar"><strong>Диалоги {activeProjectId !== null ? 'проекта' : 'общие'}</strong><button className="new-conversation-button" onClick={() => void createConversation()} disabled={conversationBusy}><Plus size={15} /> Новый диалог</button></div>
-          {conversations.length > 0 && <div className="conversation-list">{conversations.map(item => <button key={item.id} className={conversationId === item.id ? 'conversation-row selected' : 'conversation-row'} onClick={() => { void loadConversation(item).catch(error => setNotice(error instanceof Error ? error.message : 'Ошибка загрузки')); }}><MessageSquareText size={15} /><span>{item.title || 'Новый диалог'}</span>{conversationId === item.id && <Check size={14} />}</button>)}</div>}
+          {conversations.length > 0 && <div className="conversation-list">{conversations.map(item => <div key={item.id} className={conversationId === item.id ? 'conversation-row selected' : 'conversation-row'}><button className="conversation-select" onClick={() => { void loadConversation(item).catch(error => setNotice(error instanceof Error ? error.message : 'Ошибка загрузки')); }}><MessageSquareText size={15} /><span>{item.title || 'Новый диалог'}</span>{conversationId === item.id && <Check size={14} />}</button><button className="conversation-action" aria-label={'Переименовать ' + item.title} title="Переименовать" onClick={() => void renameConversation(item)}><Pencil size={13} /></button><button className="conversation-action danger" aria-label={'Удалить ' + item.title} title="Удалить" onClick={() => void deleteConversation(item)} disabled={conversationBusy}><Trash2 size={13} /></button></div>)}</div>}
           <div className="chat-window">{messages.length === 0 ? <div className="empty-chat"><div className="empty-orb"><Bot size={27} /></div><h3>Что создаём сегодня?</h3><p>Опиши задачу или выбери готовый сценарий.</p>{prompts.map(p => <button className="suggestion" key={p} onClick={() => sendMessage(p)}>{p}<ArrowUpRight size={15} /></button>)}</div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><div className="message-role">{m.role === 'user' ? 'ТЫ' : 'BIZORA AI'}</div><div>{m.text}</div></div>)}{busy && <div className="message assistant"><div className="message-role">BIZORA AI</div><div className="typing"><i /><i /><i /></div></div>}</div>
           <form className="composer" onSubmit={e => { e.preventDefault(); void sendMessage(); }}><textarea value={query} onChange={e => setQuery(e.target.value)} placeholder="Напиши, что нужно сделать..." rows={2} /><div className="composer-bottom"><span><LockKeyhole size={12} /> Приватный рабочий контекст</span><button className="send-button" type="submit" disabled={!query.trim() || busy} aria-label="Отправить"><Send size={17} /></button></div></form>
           <p className="small-note">Пока работает демонстрационный режим. Подключение реальной AI-модели — следующий этап.</p>

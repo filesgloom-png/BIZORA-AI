@@ -56,6 +56,10 @@ class ConversationCreate(BaseModel):
     project_id: int | None = Field(default=None, gt=0)
 
 
+class ConversationUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+
+
 def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400) -> dict:
     """Verify Telegram Mini App initData and return its parsed, trusted fields."""
     if not init_data or not bot_token:
@@ -444,6 +448,39 @@ def list_conversations(
         {"id": row.id, "project_id": row.project_id, "title": row.title,
          "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()} for row in rows
     ]}
+
+
+@app.patch("/api/conversations/{conversation_id}")
+def update_conversation(
+    conversation_id: int,
+    request: ConversationUpdate,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    conversation = _conversation_for_user(db, conversation_id, user["id"])
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Conversation title cannot be empty")
+    conversation.title = title
+    conversation.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(conversation)
+    return {"conversation": {
+        "id": conversation.id, "project_id": conversation.project_id, "title": conversation.title,
+        "created_at": conversation.created_at.isoformat(), "updated_at": conversation.updated_at.isoformat(),
+    }}
+
+
+@app.delete("/api/conversations/{conversation_id}", status_code=204)
+def delete_conversation(
+    conversation_id: int,
+    user: dict = Depends(get_current_telegram_user),
+    db: Session = Depends(get_db),
+):
+    conversation = _conversation_for_user(db, conversation_id, user["id"])
+    db.delete(conversation)
+    db.commit()
+    return None
 
 
 @app.get("/api/conversations/{conversation_id}/messages")
