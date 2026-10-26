@@ -533,6 +533,8 @@ def test_project_update_and_delete_are_owner_scoped_and_preserve_linked_history(
     blocked = client.delete(f"/api/projects/{project['id']}", headers=owner_headers)
     assert blocked.status_code == 409
     assert client.get(f"/api/projects/{project['id']}/conversations", headers=owner_headers).json()["conversations"][0]["id"] == conversation["id"]
+    assert client.delete(f"/api/conversations/{conversation['id']}", headers=owner_headers).status_code == 204
+    assert client.delete(f"/api/projects/{project['id']}", headers=owner_headers).status_code == 204
     empty_project = client.post(f"/api/workspaces/{workspace['id']}/projects", json={"title": "Empty"}, headers=owner_headers).json()["project"]
     deleted = client.delete(f"/api/projects/{empty_project['id']}", headers=owner_headers)
     assert deleted.status_code == 204
@@ -558,6 +560,8 @@ def test_conversation_rename_and_delete_are_owner_scoped_and_preserve_other_hist
     deleted = client.delete(f"/api/conversations/{second_id}", headers=owner_headers)
     assert deleted.status_code == 204
     assert client.get(f"/api/conversations/{second_id}/messages", headers=owner_headers).status_code == 404
+    with SessionLocal() as db:
+        assert db.query(MessageRecord).filter(MessageRecord.conversation_id == second_id).count() == 0
     remaining = client.get("/api/conversations?unassigned=true", headers=owner_headers).json()["conversations"]
     assert [item["id"] for item in remaining] == [first_id]
     history = client.get(f"/api/conversations/{first_id}/messages", headers=owner_headers)
