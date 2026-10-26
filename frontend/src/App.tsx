@@ -36,6 +36,41 @@ declare global {
   }
 }
 
+
+async function readApiResponse(response: Response): Promise<Record<string, unknown>> {
+  const raw = await response.text();
+  let data: Record<string, unknown> = {};
+  if (raw.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        data = parsed as Record<string, unknown>;
+      }
+    } catch {
+      if (response.ok) throw new Error('Сервер вернул некорректный ответ. Попробуй ещё раз.');
+    }
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('Сессия Telegram истекла или не подтверждена. Перезапусти приложение через Telegram и попробуй снова.');
+  }
+  if (!response.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : '';
+    throw new Error(detail || (response.status >= 500
+      ? 'Сервер временно недоступен. Попробуй позже.'
+      : 'Не удалось выполнить запрос. Проверь данные и попробуй снова.'));
+  }
+  if (!raw.trim()) throw new Error('Сервер вернул пустой ответ. Попробуй ещё раз.');
+  return data;
+}
+
+function userFriendlyNetworkError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    if (error instanceof TypeError) return 'Не удалось связаться с сервером. Проверь интернет-соединение и попробуй снова.';
+    return error.message;
+  }
+  return 'Произошла непредвиденная ошибка. Попробуй ещё раз.';
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('home');
   const [query, setQuery] = useState('');
@@ -313,6 +348,7 @@ export default function App() {
   async function sendMessage(text = query) {
     const clean = text.trim();
     if (!clean || busy) return;
+    const previousMessages = messages;
     setMessages(prev => [...prev, { role: 'user', text: clean }]);
     setQuery('');
     setTab('studio');
@@ -335,8 +371,10 @@ export default function App() {
           ...(activeProjectId !== null ? { project_id: activeProjectId } : {}),
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
+      const data = await readApiResponse(response);
+      if (typeof data.reply !== 'string' || !data.reply.trim()) {
+        throw new Error('AI вернул пустой ответ. История диалога не изменена — попробуй ещё раз.');
+      }
       if (typeof data.conversation_id === 'number') {
         setConversationId(data.conversation_id);
         persistContext(activeProjectId, data.conversation_id);
@@ -345,15 +383,18 @@ export default function App() {
           const now = new Date().toISOString();
           const title = existing?.title && existing.title !== 'Новый диалог' ? existing.title : clean.slice(0, 80);
           return [{
-            id: data.conversation_id, project_id: data.project_id ?? null, title,
+            id: data.conversation_id as number, project_id: (data.project_id as number | null) ?? null, title,
             created_at: existing?.created_at || now, updated_at: now,
           }, ...prev.filter(item => item.id !== data.conversation_id)];
         });
       }
-      setMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
+      setMessages(prev => [...prev, { role: 'assistant', text: data.reply as string }]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Не удалось выполнить запрос';
-      setMessages(prev => [...prev, { role: 'assistant', text: message }]);
+      const message = userFriendlyNetworkError(error);
+      // A failed request is not added to server history. Keep the composer text available for retry.
+      setMessages(previousMessages);
+      setQuery(clean);
+      setNotice(message);
     } finally {
       setBusy(false);
     }
