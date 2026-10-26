@@ -521,7 +521,7 @@ def demo_chat(
         db.flush()
     else:
         conversation = _conversation_for_user(db, request.conversation_id, user["id"])
-        if request.project_id is not None and conversation.project_id != request.project_id:
+        if conversation.project_id != request.project_id:
             raise HTTPException(status_code=404, detail="Conversation not found in this project")
     if conversation.title == "Новый диалог":
         conversation.title = message[:80]

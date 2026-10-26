@@ -481,6 +481,26 @@ def test_project_chat_context_is_persisted_and_owner_scoped(monkeypatch):
     )
     assert mismatch.status_code == 404
 
+    # A project conversation must not be reused from the unassigned/general chat context.
+    missing_project_context = client.post(
+        "/api/chat/demo",
+        json={"message": "Try without project context", "conversation_id": conversation_id},
+        headers=owner_headers,
+    )
+    assert missing_project_context.status_code == 404
+
+    # A general conversation cannot be attached to a project after creation.
+    global_chat = client.post(
+        "/api/chat/demo", json={"message": "General question"}, headers=owner_headers
+    )
+    assert global_chat.status_code == 200
+    wrong_project_context = client.post(
+        "/api/chat/demo",
+        json={"message": "Try project context", "conversation_id": global_chat.json()["conversation_id"], "project_id": project_id},
+        headers=owner_headers,
+    )
+    assert wrong_project_context.status_code == 404
+
     # Unscoped history remains separate from project-specific history.
     global_chat = client.post(
         "/api/chat/demo", json={"message": "General question"}, headers=owner_headers
