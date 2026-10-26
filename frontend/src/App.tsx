@@ -253,7 +253,15 @@ export default function App() {
       if (!response.ok) throw new Error(data.detail || 'Не удалось выполнить запрос');
       if (typeof data.conversation_id === 'number') {
         setConversationId(data.conversation_id);
-        setConversations(prev => [{ id: data.conversation_id, project_id: data.project_id ?? null, title: clean.slice(0, 80), created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, ...prev.filter(item => item.id !== data.conversation_id)]);
+        setConversations(prev => {
+          const existing = prev.find(item => item.id === data.conversation_id);
+          const now = new Date().toISOString();
+          const title = existing?.title && existing.title !== 'Новый диалог' ? existing.title : clean.slice(0, 80);
+          return [{
+            id: data.conversation_id, project_id: data.project_id ?? null, title,
+            created_at: existing?.created_at || now, updated_at: now,
+          }, ...prev.filter(item => item.id !== data.conversation_id)];
+        });
       }
       setMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
     } catch (error) {
