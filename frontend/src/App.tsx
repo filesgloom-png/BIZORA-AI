@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ArrowUpRight, Bot, BriefcaseBusiness, Check, ChevronRight, CircleHelp,
   Command, FileSpreadsheet, FolderKanban, Gem, LayoutDashboard, LockKeyhole,
-  MessageSquareText, Mic, Plus, Search, Send, Settings2, Sparkles, WandSparkles,
+  MessageSquareText, Plus, Search, Send, Settings2, Sparkles, WandSparkles,
   Workflow, Zap
 } from 'lucide-react';
 
