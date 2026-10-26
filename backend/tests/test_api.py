@@ -2,6 +2,9 @@ import hashlib
 import hmac
 import json
 import time
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 
 import pytest
@@ -317,3 +320,55 @@ def test_database_supports_large_telegram_ids(monkeypatch):
     listing = client.get("/api/conversations", headers=headers)
     assert listing.status_code == 200
     assert listing.json()["conversations"][0]["id"] == response.json()["conversation_id"]
+
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL", "").startswith("postgresql"),
+    reason="PostgreSQL concurrency integration test runs in CI's PostgreSQL service",
+)
+def test_postgres_quota_lock_serializes_concurrent_requests(monkeypatch):
+    from fastapi import HTTPException
+    from app.database import check_and_record_usage
+
+    user_id = 3_838_383
+    user = {"id": user_id, "first_name": "Quota test", "role": "user"}
+    with SessionLocal() as setup:
+        existing = setup.get(UserRecord, user_id)
+        if existing is None:
+            setup.add(UserRecord(telegram_id=user_id, first_name="Quota test", role="user"))
+            setup.commit()
+
+    first = SessionLocal()
+    second_started = threading.Event()
+
+    try:
+        check_and_record_usage(first, user, 1)
+        second_done = threading.Event()
+
+        def second_request():
+            second_started.set()
+            try:
+                with SessionLocal() as second:
+                    check_and_record_usage(second, user, 1)
+                    second.commit()
+                    return "allowed"
+            except HTTPException as exc:
+                return exc.status_code
+            finally:
+                second_done.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(second_request)
+            assert second_started.wait(timeout=2)
+            # The second transaction must wait on the same user's row lock.
+            assert not second_done.wait(timeout=0.25)
+            first.commit()
+            assert future.result(timeout=5) == 429
+    finally:
+        first.rollback()
+        first.close()
+        with SessionLocal() as cleanup:
+            cleanup.query(UsageEvent).filter(UsageEvent.telegram_id == user_id).delete()
+            cleanup.query(UserRecord).filter(UserRecord.telegram_id == user_id).delete()
+            cleanup.commit()
